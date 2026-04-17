@@ -7,7 +7,7 @@ A standalone local GUI app for scanning chess positions for candidate brilliant 
 - launches a real desktop GUI window automatically
 - renders the current position on an HTML chess board
 - loads a position from FEN or SAN move list
-- loads a full PGN game and converts it into the current search line
+- loads a full PGN game, converts it into the current search line, and snaps the board to the imported final position
 - previews the current board state before you start a search
 - analyzes the position with local Stockfish on your PC
 - searches engine lines for brilliant best-move sacrifices
@@ -50,7 +50,7 @@ Recommended:
 python main.py
 ```
 
-The app starts a local server on `http://127.0.0.1:8765` and opens it inside a desktop GUI window. If the embedded webview fails, it falls back to your browser.
+The app starts a local server on `http://127.0.0.1:8765` and opens it inside a desktop GUI window.
 
 ## Input options
 
@@ -70,5 +70,6 @@ The app starts a local server on `http://127.0.0.1:8765` and opens it inside a d
 
 ## Notes
 
-- This app uses an embedded HTML webview, but all analysis is still local on your machine.
+- This app is GUI-first and launches inside the embedded desktop window.
+- All analysis still runs locally on your machine.
 - Use a strong local Stockfish binary for best results.

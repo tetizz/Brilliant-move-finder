@@ -6,7 +6,6 @@ import os
 import sys
 import threading
 import uuid
-import webbrowser
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
@@ -331,7 +330,16 @@ def parse_pgn() -> Any:
     for move in game.mainline_moves():
         sans.append(board.san(move))
         board.push(move)
-    return jsonify({"moves": " ".join(sans), "fen": "", "ply_count": len(sans)})
+    return jsonify(
+        {
+            "moves": " ".join(sans),
+            "fen": board.fen(),
+            "ply_count": len(sans),
+            "turn": "white" if board.turn == chess.WHITE else "black",
+            "legal_move_count": board.legal_moves.count(),
+            "is_check": board.is_check(),
+        }
+    )
 
 
 @web_app.post("/api/scan")
@@ -424,18 +432,14 @@ def run_app() -> None:
             pass
         threading.Event().wait(0.1)
     else:
-        webbrowser.open(url)
-        return
+        raise RuntimeError("The local GUI server did not start.")
 
-    try:
-        window = webview.create_window(
-            "Brilliant Move Finder",
-            url,
-            width=1480,
-            height=980,
-            min_size=(1120, 760),
-            text_select=True,
-        )
-        webview.start()
-    except Exception:
-        webbrowser.open(url)
+    webview.create_window(
+        "Brilliant Move Finder",
+        url,
+        width=1480,
+        height=980,
+        min_size=(1120, 760),
+        text_select=True,
+    )
+    webview.start()

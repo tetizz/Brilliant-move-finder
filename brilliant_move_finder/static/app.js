@@ -149,8 +149,16 @@ async function onPgnSelected(event) {
     alert(payload.error || "Could not load PGN.");
     return;
   }
-  el.fenInput.value = "";
+  el.fenInput.value = payload.fen || "";
   el.movesInput.value = payload.moves;
+  if (payload.fen) {
+    state.currentFen = payload.fen;
+    state.editorTurn = payload.turn === "black" ? "b" : "w";
+    renderBoard(payload.fen);
+    el.boardMeta.textContent = `${payload.legal_move_count} legal moves${payload.is_check ? " | check" : ""}`;
+    el.turnBadge.textContent = payload.turn === "white" ? "White to move" : "Black to move";
+    syncTurnButton();
+  }
   setStatus(`Loaded PGN with ${payload.ply_count} plies.`);
   previewPosition();
 }
