@@ -17,10 +17,17 @@ import chess.pgn
 from flask import Flask, jsonify, render_template, request, send_file
 import webview
 
-from .analyzer import board_from_input
-from .engine import StockfishSession
-from .logic import BrilliantResult, CancelledError, SearchSettings, find_brilliant_moves
-from .report import export_results_to_json, export_results_to_pgn
+if __package__ in {None, ""}:
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    from brilliant_move_finder.analyzer import board_from_input
+    from brilliant_move_finder.engine import StockfishSession
+    from brilliant_move_finder.logic import BrilliantResult, CancelledError, SearchSettings, find_brilliant_moves
+    from brilliant_move_finder.report import export_results_to_json, export_results_to_pgn
+else:
+    from .analyzer import board_from_input
+    from .engine import StockfishSession
+    from .logic import BrilliantResult, CancelledError, SearchSettings, find_brilliant_moves
+    from .report import export_results_to_json, export_results_to_pgn
 
 
 SOURCE_DIR = Path(__file__).resolve().parent.parent
@@ -443,3 +450,7 @@ def run_app() -> None:
         text_select=True,
     )
     webview.start()
+
+
+if __name__ == "__main__":
+    run_app()
