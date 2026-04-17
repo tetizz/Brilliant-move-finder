@@ -1,0 +1,2 @@
+"""Brilliant Move Finder package."""
+
