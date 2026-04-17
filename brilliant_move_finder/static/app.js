@@ -1,15 +1,15 @@
 const defaults = window.APP_DEFAULTS || {};
 
 const PIECES = {
-  P: "♙", N: "♘", B: "♗", R: "♖", Q: "♕", K: "♔",
-  p: "♟", n: "♞", b: "♝", r: "♜", q: "♛", k: "♚",
+  P: "\u2659", N: "\u2658", B: "\u2657", R: "\u2656", Q: "\u2655", K: "\u2654",
+  p: "\u265F", n: "\u265E", b: "\u265D", r: "\u265C", q: "\u265B", k: "\u265A",
 };
 
 const files = ["a", "b", "c", "d", "e", "f", "g", "h"];
 const ranks = ["8", "7", "6", "5", "4", "3", "2", "1"];
 
 const state = {
-  currentFen: "rn1qkbnr/pppb1ppp/8/8/8/8/8/8 w - - 0 1",
+  currentFen: "startpos",
   jobId: null,
   pollTimer: null,
   results: [],
@@ -53,7 +53,7 @@ const el = {
 function init() {
   hydrateDefaults();
   renderCoords();
-  renderBoard(defaults.settings?.fen || defaults.fen || "startpos");
+  renderBoard(defaults.fen || "startpos");
   wireEvents();
   previewPosition();
 }
@@ -143,7 +143,7 @@ async function previewPosition() {
   }
   state.currentFen = payload.fen;
   renderBoard(payload.fen);
-  el.boardMeta.textContent = `${payload.legal_move_count} legal moves${payload.is_check ? " · check" : ""}`;
+  el.boardMeta.textContent = `${payload.legal_move_count} legal moves${payload.is_check ? " | check" : ""}`;
   el.turnBadge.textContent = payload.turn === "white" ? "White to move" : "Black to move";
 }
 
@@ -160,7 +160,12 @@ function renderBoard(fen) {
     const file = index % 8;
     const rank = Math.floor(index / 8);
     square.className = `square ${(file + rank) % 2 === 0 ? "light" : "dark"}`;
-    square.textContent = piece ? PIECES[piece] : "";
+    if (piece) {
+      const inner = document.createElement("span");
+      inner.className = "piece";
+      inner.textContent = PIECES[piece] || "";
+      square.appendChild(inner);
+    }
     el.board.appendChild(square);
   });
 }
@@ -174,7 +179,9 @@ function parseFenBoard(fen) {
   boardPart.split("/").forEach((rank) => {
     rank.split("").forEach((char) => {
       if (/\d/.test(char)) {
-        for (let i = 0; i < Number(char); i += 1) squares.push("");
+        for (let i = 0; i < Number(char); i += 1) {
+          squares.push("");
+        }
       } else {
         squares.push(char);
       }
@@ -252,6 +259,7 @@ function updateJobView(job) {
   renderResults(job.results || []);
   updateExports(job);
   if (job.error) {
+    el.detailsView.className = "details";
     el.detailsView.textContent = job.error;
   }
 }
@@ -379,7 +387,7 @@ function escapeHtml(value) {
     .replaceAll("&", "&amp;")
     .replaceAll("<", "&lt;")
     .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;");
+    .replaceAll("\"", "&quot;");
 }
 
 init();

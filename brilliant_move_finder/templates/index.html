@@ -13,109 +13,135 @@
   <script>
     window.APP_DEFAULTS = {{ defaults|tojson }};
   </script>
+
+  <header class="topbar">
+    <div class="brand-wrap">
+      <div class="brand-kicker">Local Native Engine</div>
+      <div class="brand-title">Brilliant Move Finder</div>
+      <div class="brand-sub">Study-like board UI, deep local Stockfish analysis, live brilliant hits, and PGN export.</div>
+    </div>
+    <div class="topbar-actions">
+      <a id="exportPgnBtn" class="hbtn disabled" href="#" download>Export PGN</a>
+      <a id="exportJsonBtn" class="hbtn disabled" href="#" download>Export JSON</a>
+    </div>
+  </header>
+
   <div class="app-shell">
     <aside class="sidebar">
-      <div class="panel hero">
-        <div class="eyebrow">Local Native Engine</div>
-        <h1>Brilliant Move Finder</h1>
-        <p>HTML board, local Stockfish, live brilliant hits, and PGN export from your own machine.</p>
-      </div>
-
-      <div class="panel">
-        <div class="panel-title">Engine</div>
+      <section class="nav-section">
+        <div class="nav-label">Engine</div>
         <label class="field">
           <span>Stockfish executable</span>
           <input id="enginePath" type="text" placeholder="C:\path\to\stockfish.exe">
         </label>
-      </div>
+      </section>
 
-      <div class="panel">
-        <div class="panel-title">Position</div>
+      <section class="nav-section">
+        <div class="nav-label">Position</div>
         <label class="field">
           <span>FEN</span>
           <textarea id="fenInput" rows="3" placeholder="Optional FEN"></textarea>
         </label>
         <label class="field">
           <span>Moves from start (SAN)</span>
-          <textarea id="movesInput" rows="5" placeholder="e4 e5 Nf3 Nc6 Bb5 ..."></textarea>
+          <textarea id="movesInput" rows="6" placeholder="e4 e5 Nf3 Nc6 Bb5 ..."></textarea>
         </label>
         <div class="button-row">
-          <button id="previewBtn" class="btn ghost">Preview Position</button>
-          <button id="loadPgnBtn" class="btn ghost">Load PGN</button>
+          <button id="previewBtn" class="hbtn primary">Preview Position</button>
+          <button id="loadPgnBtn" class="hbtn">Load PGN</button>
           <input id="pgnFileInput" type="file" accept=".pgn" hidden>
         </div>
-      </div>
+      </section>
 
-      <div class="panel">
-        <div class="panel-title">Search</div>
+      <section class="nav-section">
+        <div class="nav-label">Search</div>
         <label class="field">
           <span>Preset</span>
           <select id="presetSelect"></select>
         </label>
-        <div class="grid two">
-          <label class="field"><span>Threads</span><input id="threadsInput" type="number" min="1"></label>
-          <label class="field"><span>Hash (MB)</span><input id="hashInput" type="number" min="128"></label>
-          <label class="field"><span>Root depth</span><input id="rootDepthInput" type="number" min="1"></label>
-          <label class="field"><span>Shallow depth</span><input id="shallowDepthInput" type="number" min="1"></label>
-          <label class="field"><span>Reply depth</span><input id="replyDepthInput" type="number" min="1"></label>
-          <label class="field"><span>Continuation depth</span><input id="continuationDepthInput" type="number" min="1"></label>
-          <label class="field"><span>Frontier width</span><input id="frontierInput" type="number" min="1"></label>
-          <label class="field"><span>Tree max ply</span><input id="treePlyInput" type="number" min="1"></label>
-          <label class="field"><span>Tree node cap</span><input id="treeNodesInput" type="number" min="1"></label>
-          <label class="field"><span>MultiPV</span><input id="multipvInput" type="number" min="1"></label>
+        <div class="settings-grid">
+          <label class="field compact"><span>Threads</span><input id="threadsInput" type="number" min="1"></label>
+          <label class="field compact"><span>Hash (MB)</span><input id="hashInput" type="number" min="128"></label>
+          <label class="field compact"><span>Root depth</span><input id="rootDepthInput" type="number" min="1"></label>
+          <label class="field compact"><span>Shallow depth</span><input id="shallowDepthInput" type="number" min="1"></label>
+          <label class="field compact"><span>Reply depth</span><input id="replyDepthInput" type="number" min="1"></label>
+          <label class="field compact"><span>Continuation depth</span><input id="continuationDepthInput" type="number" min="1"></label>
+          <label class="field compact"><span>Frontier width</span><input id="frontierInput" type="number" min="1"></label>
+          <label class="field compact"><span>Tree max ply</span><input id="treePlyInput" type="number" min="1"></label>
+          <label class="field compact"><span>Tree node cap</span><input id="treeNodesInput" type="number" min="1"></label>
+          <label class="field compact"><span>MultiPV</span><input id="multipvInput" type="number" min="1"></label>
         </div>
         <div class="button-row">
-          <button id="scanBtn" class="btn primary">Find Brilliant Moves</button>
-          <button id="cancelBtn" class="btn ghost">Cancel</button>
+          <button id="scanBtn" class="hbtn primary strong">Find Brilliant Moves</button>
+          <button id="cancelBtn" class="hbtn">Cancel</button>
         </div>
-      </div>
+      </section>
     </aside>
 
     <main class="main">
-      <section class="top-grid">
-        <div class="panel board-panel">
-          <div class="panel-head">
+      <section class="hero-grid">
+        <article class="surface board-surface">
+          <div class="surface-head">
             <div>
-              <div class="panel-title">Board</div>
-              <div id="boardMeta" class="subtle">Load a position to preview it here.</div>
+              <div class="surface-kicker">Board</div>
+              <div class="surface-title">Current Position</div>
             </div>
-            <div id="turnBadge" class="badge">White to move</div>
+            <div id="turnBadge" class="status-pill">White to move</div>
           </div>
-          <div class="board-shell">
-            <div class="coords ranks" id="rankLabels"></div>
-            <div class="board-stack">
-              <div class="board" id="board"></div>
-              <div class="coords files" id="fileLabels"></div>
+          <div class="study-layout">
+            <div class="board-wrap">
+              <div class="board-coords">
+                <div class="rank-labels" id="rankLabels"></div>
+                <div class="board-grid" id="board"></div>
+                <div class="file-labels" id="fileLabels"></div>
+              </div>
+            </div>
+            <div class="position-panel">
+              <div class="info-card">
+                <div class="info-label">Position summary</div>
+                <div id="boardMeta" class="info-value">Load a position to preview it here.</div>
+              </div>
+              <div class="info-card">
+                <div class="info-label">Preview note</div>
+                <div class="info-value">The board updates from FEN or SAN before you launch the scan.</div>
+              </div>
             </div>
           </div>
-        </div>
+        </article>
 
-        <div class="panel">
-          <div class="panel-head">
+        <article class="surface log-surface">
+          <div class="surface-head">
             <div>
-              <div class="panel-title">Live Search</div>
-              <div id="statusText" class="subtle">Ready.</div>
+              <div class="surface-kicker">Live Search</div>
+              <div class="surface-title">Engine Activity</div>
             </div>
-            <div id="resultCount" class="badge muted">0 hits</div>
+            <div id="resultCount" class="status-pill muted">0 hits</div>
           </div>
+          <div id="statusText" class="status-line">Ready.</div>
           <div id="progressLog" class="log"></div>
-          <div class="button-row top-pad">
-            <a id="exportPgnBtn" class="btn ghost disabled" href="#" download>Export PGN</a>
-            <a id="exportJsonBtn" class="btn ghost disabled" href="#" download>Export JSON</a>
-          </div>
-        </div>
+        </article>
       </section>
 
-      <section class="results-layout">
-        <div class="panel">
-          <div class="panel-title">Brilliant Moves Found</div>
+      <section class="results-grid">
+        <article class="surface">
+          <div class="surface-head">
+            <div>
+              <div class="surface-kicker">Results</div>
+              <div class="surface-title">Brilliant Moves Found</div>
+            </div>
+          </div>
           <div id="resultsList" class="results-list empty-state">No brilliant moves yet.</div>
-        </div>
+        </article>
 
-        <div class="panel">
-          <div class="panel-title">Details</div>
+        <article class="surface">
+          <div class="surface-head">
+            <div>
+              <div class="surface-kicker">Details</div>
+              <div class="surface-title">Selected Line</div>
+            </div>
+          </div>
           <div id="detailsView" class="details empty-state">Select a result to inspect the line, flags, and defense tree.</div>
-        </div>
+        </article>
       </section>
     </main>
   </div>

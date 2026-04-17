@@ -3,16 +3,20 @@ from __future__ import annotations
 import io
 import json
 import os
+import sys
 import threading
 import uuid
 import webbrowser
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
+from urllib.error import URLError
+from urllib.request import urlopen
 
 import chess
 import chess.pgn
 from flask import Flask, jsonify, render_template, request, send_file
+import webview
 
 from .analyzer import board_from_input
 from .engine import StockfishSession
@@ -20,14 +24,21 @@ from .logic import BrilliantResult, CancelledError, SearchSettings, find_brillia
 from .report import export_results_to_json, export_results_to_pgn
 
 
-APP_DIR = Path(__file__).resolve().parent.parent
-CONFIG_PATH = APP_DIR / "config.json"
-EXPORT_DIR = APP_DIR / "exports"
+SOURCE_DIR = Path(__file__).resolve().parent.parent
+RUNTIME_DIR = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else SOURCE_DIR
+RESOURCE_DIR = Path(getattr(sys, "_MEIPASS", SOURCE_DIR))
+CONFIG_PATH = RUNTIME_DIR / "config.json"
+EXPORT_DIR = RUNTIME_DIR / "exports"
 
 DEFAULT_ENGINE_HINTS = [
-    Path("stockfish.exe"),
-    Path("stockfish") / "stockfish-windows-x86-64-bmi2.exe",
-    Path("stockfish") / "stockfish-windows-x86-64-avx2.exe",
+    RUNTIME_DIR / "stockfish.exe",
+    RUNTIME_DIR / "stockfish" / "stockfish-windows-x86-64-avx512icl.exe",
+    RUNTIME_DIR / "stockfish" / "stockfish-windows-x86-64-bmi2.exe",
+    RUNTIME_DIR / "stockfish" / "stockfish-windows-x86-64-avx2.exe",
+    SOURCE_DIR / "stockfish.exe",
+    SOURCE_DIR / "stockfish" / "stockfish-windows-x86-64-avx512icl.exe",
+    SOURCE_DIR / "stockfish" / "stockfish-windows-x86-64-bmi2.exe",
+    SOURCE_DIR / "stockfish" / "stockfish-windows-x86-64-avx2.exe",
     Path(os.environ.get("STOCKFISH_PATH", "")),
 ]
 
@@ -185,7 +196,11 @@ class JobStore:
 
 
 job_store = JobStore()
-web_app = Flask(__name__, template_folder="templates", static_folder="static")
+web_app = Flask(
+    __name__,
+    template_folder=str(RESOURCE_DIR / "brilliant_move_finder" / "templates"),
+    static_folder=str(RESOURCE_DIR / "brilliant_move_finder" / "static"),
+)
 
 
 def _build_settings(payload: dict[str, Any]) -> SearchSettings:
@@ -348,5 +363,36 @@ def export_job_json(job_id: str) -> Any:
 
 def run_app() -> None:
     port = 8765
-    threading.Timer(0.8, lambda: webbrowser.open(f"http://127.0.0.1:{port}/")).start()
-    web_app.run(host="127.0.0.1", port=port, debug=False, threaded=True)
+    server = threading.Thread(
+        target=lambda: web_app.run(host="127.0.0.1", port=port, debug=False, threaded=True, use_reloader=False),
+        daemon=True,
+    )
+    server.start()
+
+    url = f"http://127.0.0.1:{port}/"
+    for _ in range(80):
+        try:
+            with urlopen(url, timeout=0.25) as response:
+                if response.status == 200:
+                    break
+        except URLError:
+            pass
+        except Exception:
+            pass
+        threading.Event().wait(0.1)
+    else:
+        webbrowser.open(url)
+        return
+
+    try:
+        window = webview.create_window(
+            "Brilliant Move Finder",
+            url,
+            width=1480,
+            height=980,
+            min_size=(1120, 760),
+            text_select=True,
+        )
+        webview.start()
+    except Exception:
+        webbrowser.open(url)

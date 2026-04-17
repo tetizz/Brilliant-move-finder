@@ -1,10 +1,10 @@
 # Brilliant Move Finder
 
-A standalone local app for scanning chess positions for candidate brilliant moves using a local Stockfish engine and an HTML board interface in your browser.
+A standalone local GUI app for scanning chess positions for candidate brilliant moves using a local Stockfish engine and an HTML board interface in a desktop window.
 
 ## What it does
 
-- launches a local browser UI automatically
+- launches a real desktop GUI window automatically
 - renders the current position on an HTML chess board
 - loads a position from FEN or SAN move list
 - loads a full PGN game and converts it into the current search line
@@ -50,7 +50,7 @@ Recommended:
 python main.py
 ```
 
-The app starts a local server on `http://127.0.0.1:8765` and opens it in your browser.
+The app starts a local server on `http://127.0.0.1:8765` and opens it inside a desktop GUI window. If the embedded webview fails, it falls back to your browser.
 
 ## Input options
 
@@ -70,5 +70,5 @@ The app starts a local server on `http://127.0.0.1:8765` and opens it in your br
 
 ## Notes
 
-- This app uses a browser UI, but all analysis is still local on your machine.
+- This app uses an embedded HTML webview, but all analysis is still local on your machine.
 - Use a strong local Stockfish binary for best results.
