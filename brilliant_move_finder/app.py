@@ -192,6 +192,11 @@ class BrilliantMoveFinderApp:
             text="Enter either a FEN or a SAN move list. If both are filled, FEN wins.",
         ).grid(row=4, column=0, sticky="w", padx=8, pady=(0, 8))
         ttk.Button(input_frame, text="Load PGN", command=self._load_pgn).grid(row=5, column=0, sticky="w", padx=8, pady=(0, 8))
+        position_tools = ttk.Frame(input_frame)
+        position_tools.grid(row=6, column=0, sticky="w", padx=8, pady=(0, 8))
+        ttk.Button(position_tools, text="Preview Position", command=self._preview_position).pack(side="left")
+        ttk.Button(position_tools, text="Load Session", command=self._load_session).pack(side="left", padx=(8, 0))
+        ttk.Button(position_tools, text="Save Session", command=self._save_session_snapshot).pack(side="left", padx=(8, 0))
         input_frame.columnconfigure(0, weight=1)
 
         settings_frame = ttk.LabelFrame(parent, text="Search")
@@ -300,6 +305,72 @@ class BrilliantMoveFinderApp:
             self._append_log(f"Loaded PGN with {len(sans)} plies from {path}")
         except Exception as exc:
             messagebox.showerror("PGN load failed", str(exc))
+
+    def _preview_position(self) -> None:
+        try:
+            board = board_from_input(self.fen_var.get(), self.moves_var.get())
+        except Exception as exc:
+            messagebox.showerror("Invalid position", str(exc))
+            return
+        self._set_details(self._format_position_preview(board))
+        self.status_var.set("Previewing current position.")
+
+    def _load_session(self) -> None:
+        path = filedialog.askopenfilename(
+            title="Load Brilliant Move Finder session",
+            filetypes=[("BMF Session", "*.bmf.json"), ("JSON files", "*.json"), ("All files", "*.*")],
+        )
+        if not path:
+            return
+        try:
+            payload = json.loads(Path(path).read_text(encoding="utf-8"))
+            self.engine_path_var.set(str(payload.get("engine_path", "")).strip())
+            self.fen_var.set(str(payload.get("fen", "")).strip())
+            self.moves_var.set(str(payload.get("moves", "")).strip())
+            self.preset_var.set(str(payload.get("preset", self.preset_var.get())).strip() or "Balanced")
+            settings = payload.get("settings", {})
+            mapping = {
+                "threads": self.threads_var,
+                "hash_mb": self.hash_var,
+                "root_depth": self.root_depth_var,
+                "shallow_depth": self.shallow_depth_var,
+                "reply_depth": self.reply_depth_var,
+                "continuation_depth": self.continuation_depth_var,
+                "frontier_width": self.frontier_var,
+                "tree_max_ply": self.tree_ply_var,
+                "tree_node_cap": self.tree_nodes_var,
+                "multipv": self.multipv_var,
+            }
+            for key, var in mapping.items():
+                if key in settings:
+                    var.set(int(settings[key]))
+            self.status_var.set(f"Loaded session: {Path(path).name}")
+            self._append_log(f"Loaded session from {path}")
+        except Exception as exc:
+            messagebox.showerror("Session load failed", str(exc))
+
+    def _save_session_snapshot(self) -> None:
+        settings = self._build_settings()
+        suggested = default_export_path("brilliant-session", "bmf.json")
+        path = filedialog.asksaveasfilename(
+            title="Save Brilliant Move Finder session",
+            defaultextension=".bmf.json",
+            initialfile=suggested.name,
+            initialdir=str(suggested.parent),
+            filetypes=[("BMF Session", "*.bmf.json"), ("JSON files", "*.json"), ("All files", "*.*")],
+        )
+        if not path:
+            return
+        payload = {
+            "engine_path": self.engine_path_var.get().strip(),
+            "fen": self.fen_var.get().strip(),
+            "moves": self.moves_var.get().strip(),
+            "preset": self.preset_var.get(),
+            "settings": asdict(settings),
+        }
+        Path(path).write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        self.status_var.set(f"Saved session: {Path(path).name}")
+        self._append_log(f"Saved session to {path}")
 
     def _apply_preset(self, _event: object | None = None) -> None:
         preset = PRESET_SETTINGS.get(self.preset_var.get())
@@ -464,6 +535,9 @@ class BrilliantMoveFinderApp:
             f"Line to reach candidate position: {' '.join(result.path_san) if result.path_san else '(starting position)'}",
             f"Candidate path including move: {' '.join(result.path_san + [result.move_san])}",
             "",
+            "Why this qualified:",
+            *[f"  - {reason}" for reason in self._build_reason_summary(result)],
+            "",
             f"Eval after move: {result.eval_cp:.1f} cp",
             f"Shallow eval after move: {result.shallow_eval_cp:.1f} cp",
             f"Sacrifice value: {result.sacrifice_value}",
@@ -480,6 +554,47 @@ class BrilliantMoveFinderApp:
         for name, value in asdict(result.flags).items():
             lines.append(f"  - {name}: {value}")
         self._set_details("\n".join(lines))
+
+    def _build_reason_summary(self, result: BrilliantResult) -> list[str]:
+        reasons: list[str] = []
+        if result.flags.is_best_move:
+            reasons.append("Stockfish selected this as the top move in the position.")
+        if result.flags.is_real_sacrifice:
+            reasons.append(
+                f"It counts as a real {result.sacrifice_category.replace('_', ' ')} sacrifice with value {result.sacrifice_value}."
+            )
+        if result.flags.looks_losing_initially:
+            reasons.append("The move looks worse at first glance before deeper analysis recovers it.")
+        if result.flags.holds_after_best_defense:
+            reasons.append(
+                f"It still holds after the opponent's best defense: {result.best_defense_san or 'none'}."
+            )
+        if result.flags.has_forcing_followup and result.continuation_san:
+            reasons.append(f"The continuation {result.continuation_san} provides the concrete follow-up.")
+        if result.compensation_type != "none":
+            reasons.append(f"The compensation pattern is {result.compensation_type.replace('_', ' ')}.")
+        if not reasons:
+            reasons.append("This hit passed the current strict brilliant-move pipeline.")
+        return reasons
+
+    def _format_position_preview(self, board: chess.Board) -> str:
+        side = "White" if board.turn == chess.WHITE else "Black"
+        castling = board.castling_xfen()
+        ep = chess.square_name(board.ep_square) if board.ep_square is not None else "-"
+        return "\n".join(
+            [
+                "Current Position Preview",
+                "",
+                str(board),
+                "",
+                f"Side to move: {side}",
+                f"FEN: {board.fen()}",
+                f"Castling: {castling if castling else '-'}",
+                f"En passant: {ep}",
+                f"Halfmove clock: {board.halfmove_clock}",
+                f"Fullmove number: {board.fullmove_number}",
+            ]
+        )
 
     def _copy_selected_line(self) -> None:
         selection = self.results_list.curselection()
