@@ -39,6 +39,7 @@ const el = {
   fenInput: document.getElementById("fenInput"),
   movesInput: document.getElementById("movesInput"),
   presetSelect: document.getElementById("presetSelect"),
+  hardwareNote: document.getElementById("hardwareNote"),
   threadsInput: document.getElementById("threadsInput"),
   hashInput: document.getElementById("hashInput"),
   rootDepthInput: document.getElementById("rootDepthInput"),
@@ -97,9 +98,11 @@ function hydrateDefaults() {
   });
   el.presetSelect.value = defaults.preset || "Balanced";
   applyPreset(el.presetSelect.value, false);
+  renderHardwareNote();
 
   if (defaults.settings) {
     setNumericFields(defaults.settings);
+    clampHardwareInputs(false);
   }
 }
 
@@ -120,7 +123,35 @@ function applyPreset(name, announce = true) {
   const preset = defaults.presets?.[name];
   if (!preset) return;
   setNumericFields(preset);
+  clampHardwareInputs(false);
   if (announce) setStatus(`Applied ${name} preset.`);
+}
+
+function renderHardwareNote() {
+  const hardware = defaults.hardware || {};
+  const ramGb = hardware.ram_mb ? (hardware.ram_mb / 1024).toFixed(1) : "?";
+  const safeHashGb = hardware.safe_hash_mb ? (hardware.safe_hash_mb / 1024).toFixed(1) : "?";
+  el.hardwareNote.textContent = `Detected ${hardware.threads || "?"} CPU threads and ${ramGb} GB RAM. Safe caps: ${hardware.safe_thread_cap || "?"} threads and ${safeHashGb} GB Stockfish hash.`;
+}
+
+function clampHardwareInputs(announce = true) {
+  const hardware = defaults.hardware || {};
+  const maxThreads = Number(hardware.safe_thread_cap || 1);
+  const maxHash = Number(hardware.safe_hash_mb || 1024);
+  let clamped = false;
+
+  if (Number(el.threadsInput.value) > maxThreads) {
+    el.threadsInput.value = maxThreads;
+    clamped = true;
+  }
+  if (Number(el.hashInput.value) > maxHash) {
+    el.hashInput.value = maxHash;
+    clamped = true;
+  }
+
+  if (announce && clamped) {
+    setStatus(`Clamped engine settings to safe hardware limits: ${maxThreads} threads, ${maxHash} MB hash.`);
+  }
 }
 
 function wireEvents() {
@@ -133,6 +164,8 @@ function wireEvents() {
   el.setupModeBtn.addEventListener("click", toggleSetupMode);
   el.turnToggleBtn.addEventListener("click", toggleEditorTurn);
   el.presetSelect.addEventListener("change", (event) => applyPreset(event.target.value));
+  el.threadsInput.addEventListener("change", () => clampHardwareInputs());
+  el.hashInput.addEventListener("change", () => clampHardwareInputs());
   el.loadPgnBtn.addEventListener("click", () => el.pgnFileInput.click());
   el.pgnFileInput.addEventListener("change", onPgnSelected);
   document.addEventListener("pointermove", onPointerMove);

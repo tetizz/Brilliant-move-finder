@@ -153,6 +153,17 @@ input:focus, textarea:focus, select:focus {
 
 .field.compact { margin-top: 0; }
 
+.hardware-note {
+  margin-top: 10px;
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--muted);
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: rgba(255,255,255,0.02);
+}
+
 .button-row {
   display: flex;
   flex-wrap: wrap;

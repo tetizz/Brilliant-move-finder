@@ -76,9 +76,11 @@ def _system_total_ram_mb() -> int:
 
 TOTAL_RAM_MB = _system_total_ram_mb()
 CPU_THREADS = max(1, os.cpu_count() or 8)
+SAFE_THREAD_CAP = max(1, CPU_THREADS)
+SAFE_HASH_MB = max(1024, min(65536, (TOTAL_RAM_MB * 3) // 4))
 BALANCED_HASH_MB = max(2048, min(8192, TOTAL_RAM_MB // 8))
 DEEP_HASH_MB = max(8192, min(24576, TOTAL_RAM_MB // 3))
-EXTREME_HASH_MB = max(16384, min(65536, (TOTAL_RAM_MB * 3) // 4))
+EXTREME_HASH_MB = max(16384, SAFE_HASH_MB)
 
 PRESET_SETTINGS = {
     "Quick": {
@@ -255,8 +257,8 @@ web_app = Flask(
 
 def _build_settings(payload: dict[str, Any]) -> SearchSettings:
     return SearchSettings(
-        threads=max(1, int(payload.get("threads", PRESET_SETTINGS["Balanced"]["threads"]))),
-        hash_mb=max(128, int(payload.get("hash_mb", PRESET_SETTINGS["Balanced"]["hash_mb"]))),
+        threads=max(1, min(SAFE_THREAD_CAP, int(payload.get("threads", PRESET_SETTINGS["Balanced"]["threads"])))),
+        hash_mb=max(128, min(SAFE_HASH_MB, int(payload.get("hash_mb", PRESET_SETTINGS["Balanced"]["hash_mb"])))),
         root_depth=max(1, int(payload.get("root_depth", PRESET_SETTINGS["Balanced"]["root_depth"]))),
         shallow_depth=max(1, int(payload.get("shallow_depth", PRESET_SETTINGS["Balanced"]["shallow_depth"]))),
         reply_depth=max(1, int(payload.get("reply_depth", PRESET_SETTINGS["Balanced"]["reply_depth"]))),
@@ -307,6 +309,12 @@ def index() -> str:
             for key, value in PRESET_SETTINGS["Balanced"].items()
         },
         "presets": PRESET_SETTINGS,
+        "hardware": {
+            "threads": CPU_THREADS,
+            "safe_thread_cap": SAFE_THREAD_CAP,
+            "ram_mb": TOTAL_RAM_MB,
+            "safe_hash_mb": SAFE_HASH_MB,
+        },
     }
     return render_template("index.html", defaults=defaults)
 
