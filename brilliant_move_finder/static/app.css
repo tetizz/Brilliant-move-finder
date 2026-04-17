@@ -328,13 +328,25 @@ input:focus, textarea:focus, select:focus {
   user-select: none;
   font-size: calc(var(--sq) * .76);
   line-height: 1;
+  cursor: pointer;
 }
 
 .square.light { background: var(--light-sq); }
 .square.dark { background: var(--dark-sq); }
+.square.drag-over {
+  box-shadow: inset 0 0 0 3px rgba(126,168,196,.42);
+}
+.square.selected {
+  box-shadow: inset 0 0 0 3px rgba(165,148,192,.5);
+}
 
 .piece {
   filter: drop-shadow(0 2px 4px rgba(0,0,0,.35));
+  cursor: grab;
+}
+
+.piece.dragging {
+  opacity: .35;
 }
 
 .position-panel {
@@ -476,6 +488,10 @@ input:focus, textarea:focus, select:focus {
   align-items: center;
   justify-content: center;
   color: var(--muted);
+}
+
+.board-tools {
+  margin: 2px 0 14px;
 }
 
 @media (max-width: 1240px) {

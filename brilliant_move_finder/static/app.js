@@ -14,6 +14,9 @@ const state = {
   pollTimer: null,
   results: [],
   activeIndex: -1,
+  orientation: "white",
+  selectedSquare: null,
+  draggingFrom: null,
 };
 
 const el = {
@@ -41,6 +44,9 @@ const el = {
   fileLabels: document.getElementById("fileLabels"),
   boardMeta: document.getElementById("boardMeta"),
   turnBadge: document.getElementById("turnBadge"),
+  startPosBtn: document.getElementById("startPosBtn"),
+  clearBoardBtn: document.getElementById("clearBoardBtn"),
+  flipBoardBtn: document.getElementById("flipBoardBtn"),
   statusText: document.getElementById("statusText"),
   resultCount: document.getElementById("resultCount"),
   progressLog: document.getElementById("progressLog"),
@@ -102,6 +108,9 @@ function wireEvents() {
   el.previewBtn.addEventListener("click", previewPosition);
   el.scanBtn.addEventListener("click", startScan);
   el.cancelBtn.addEventListener("click", cancelScan);
+  el.startPosBtn.addEventListener("click", setStartPosition);
+  el.clearBoardBtn.addEventListener("click", clearBoard);
+  el.flipBoardBtn.addEventListener("click", flipBoard);
   el.presetSelect.addEventListener("change", (event) => applyPreset(event.target.value));
   el.loadPgnBtn.addEventListener("click", () => el.pgnFileInput.click());
   el.pgnFileInput.addEventListener("change", onPgnSelected);
@@ -148,26 +157,79 @@ async function previewPosition() {
 }
 
 function renderCoords() {
-  el.rankLabels.innerHTML = ranks.map((r) => `<span>${r}</span>`).join("");
-  el.fileLabels.innerHTML = files.map((f) => `<span>${f}</span>`).join("");
+  const shownRanks = state.orientation === "white" ? ranks : [...ranks].reverse();
+  const shownFiles = state.orientation === "white" ? files : [...files].reverse();
+  el.rankLabels.innerHTML = shownRanks.map((r) => `<span>${r}</span>`).join("");
+  el.fileLabels.innerHTML = shownFiles.map((f) => `<span>${f}</span>`).join("");
 }
 
 function renderBoard(fen) {
   const position = parseFenBoard(fen);
   el.board.innerHTML = "";
-  position.forEach((piece, index) => {
+  const ordered = orientedBoard(position);
+  ordered.forEach(({ piece, squareName }, index) => {
     const square = document.createElement("div");
     const file = index % 8;
     const rank = Math.floor(index / 8);
     square.className = `square ${(file + rank) % 2 === 0 ? "light" : "dark"}`;
+    square.dataset.square = squareName;
+    if (state.selectedSquare === squareName) {
+      square.classList.add("selected");
+    }
+    square.addEventListener("dragover", (event) => {
+      event.preventDefault();
+      square.classList.add("drag-over");
+    });
+    square.addEventListener("dragleave", () => square.classList.remove("drag-over"));
+    square.addEventListener("drop", async (event) => {
+      event.preventDefault();
+      square.classList.remove("drag-over");
+      const fromSquare = event.dataTransfer.getData("text/plain") || state.draggingFrom;
+      if (fromSquare) {
+        await tryBoardMove(fromSquare, squareName);
+      }
+      state.draggingFrom = null;
+    });
+    square.addEventListener("click", async () => handleSquareClick(squareName));
     if (piece) {
       const inner = document.createElement("span");
       inner.className = "piece";
       inner.textContent = PIECES[piece] || "";
+      inner.draggable = true;
+      inner.addEventListener("dragstart", (event) => {
+        state.draggingFrom = squareName;
+        event.dataTransfer.setData("text/plain", squareName);
+        inner.classList.add("dragging");
+      });
+      inner.addEventListener("dragend", () => {
+        state.draggingFrom = null;
+        inner.classList.remove("dragging");
+      });
       square.appendChild(inner);
     }
     el.board.appendChild(square);
   });
+}
+
+function orientedBoard(position) {
+  const mapped = position.map((piece, index) => {
+    const fileIndex = index % 8;
+    const rankIndex = Math.floor(index / 8);
+    return {
+      piece,
+      squareName: `${files[fileIndex]}${8 - rankIndex}`,
+    };
+  });
+  if (state.orientation === "white") {
+    return mapped;
+  }
+  const reversed = [];
+  for (let rank = 7; rank >= 0; rank -= 1) {
+    for (let file = 7; file >= 0; file -= 1) {
+      reversed.push(mapped[rank * 8 + file]);
+    }
+  }
+  return reversed;
 }
 
 function parseFenBoard(fen) {
@@ -203,6 +265,83 @@ function collectSettings() {
     tree_node_cap: Number(el.treeNodesInput.value),
     multipv: Number(el.multipvInput.value),
   };
+}
+
+async function handleSquareClick(squareName) {
+  if (!state.selectedSquare) {
+    if (pieceAtSquare(state.currentFen, squareName)) {
+      state.selectedSquare = squareName;
+      renderBoard(state.currentFen);
+    }
+    return;
+  }
+  const fromSquare = state.selectedSquare;
+  state.selectedSquare = null;
+  renderBoard(state.currentFen);
+  if (fromSquare !== squareName) {
+    await tryBoardMove(fromSquare, squareName);
+  }
+}
+
+async function tryBoardMove(fromSquare, toSquare) {
+  const response = await fetch("/api/move", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      fen: state.currentFen,
+      from: fromSquare,
+      to: toSquare,
+      promotion: "q",
+    }),
+  });
+  const payload = await response.json();
+  if (!response.ok) {
+    setStatus(payload.error || "Illegal move.");
+    return;
+  }
+  state.currentFen = payload.fen;
+  el.fenInput.value = payload.fen;
+  el.movesInput.value = "";
+  renderBoard(payload.fen);
+  el.boardMeta.textContent = `${payload.legal_move_count} legal moves${payload.is_check ? " | check" : ""}`;
+  el.turnBadge.textContent = payload.turn === "white" ? "White to move" : "Black to move";
+  setStatus(`Played ${payload.san}`);
+}
+
+function pieceAtSquare(fen, squareName) {
+  const squares = parseFenBoard(fen);
+  const fileIndex = files.indexOf(squareName[0]);
+  const rankIndex = 8 - Number(squareName[1]);
+  return squares[rankIndex * 8 + fileIndex];
+}
+
+function setStartPosition() {
+  state.selectedSquare = null;
+  state.currentFen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
+  el.fenInput.value = state.currentFen;
+  el.movesInput.value = "";
+  renderBoard(state.currentFen);
+  el.boardMeta.textContent = "20 legal moves";
+  el.turnBadge.textContent = "White to move";
+  setStatus("Reset to the starting position.");
+}
+
+function clearBoard() {
+  state.selectedSquare = null;
+  state.currentFen = "8/8/8/8/8/8/8/8 w - - 0 1";
+  el.fenInput.value = state.currentFen;
+  el.movesInput.value = "";
+  renderBoard(state.currentFen);
+  el.boardMeta.textContent = "0 legal moves";
+  el.turnBadge.textContent = "White to move";
+  setStatus("Cleared the board.");
+}
+
+function flipBoard() {
+  state.orientation = state.orientation === "white" ? "black" : "white";
+  renderCoords();
+  renderBoard(state.currentFen);
+  setStatus(`Flipped board to ${state.orientation} view.`);
 }
 
 async function startScan() {

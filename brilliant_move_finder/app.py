@@ -276,6 +276,49 @@ def preview() -> Any:
     )
 
 
+@web_app.post("/api/move")
+def apply_move() -> Any:
+    payload = request.get_json(force=True)
+    board = chess.Board(payload.get("fen", ""))
+    from_square = payload.get("from")
+    to_square = payload.get("to")
+    promotion = payload.get("promotion", "q")
+    if not from_square or not to_square:
+        return jsonify({"error": "Both from and to squares are required."}), 400
+
+    promo_map = {
+        "q": chess.QUEEN,
+        "r": chess.ROOK,
+        "b": chess.BISHOP,
+        "n": chess.KNIGHT,
+    }
+    base_move = chess.Move.from_uci(f"{from_square}{to_square}")
+    legal_move = None
+    for move in board.legal_moves:
+        if move.from_square == base_move.from_square and move.to_square == base_move.to_square:
+            if move.promotion is None:
+                legal_move = move
+                break
+            if move.promotion == promo_map.get(str(promotion).lower(), chess.QUEEN):
+                legal_move = move
+                break
+
+    if legal_move is None:
+        return jsonify({"error": "Illegal move for the current position."}), 400
+
+    san = board.san(legal_move)
+    board.push(legal_move)
+    return jsonify(
+        {
+            "fen": board.fen(),
+            "san": san,
+            "turn": "white" if board.turn == chess.WHITE else "black",
+            "legal_move_count": board.legal_moves.count(),
+            "is_check": board.is_check(),
+        }
+    )
+
+
 @web_app.post("/api/parse-pgn")
 def parse_pgn() -> Any:
     payload = request.get_json(force=True)
