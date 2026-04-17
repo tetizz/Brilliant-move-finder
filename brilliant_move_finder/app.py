@@ -5,11 +5,13 @@ import os
 import queue
 import threading
 import tkinter as tk
+import io
 from dataclasses import asdict
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
 import chess
+import chess.pgn
 
 from .analyzer import board_from_input
 from .engine import StockfishSession
@@ -26,6 +28,39 @@ DEFAULT_ENGINE_HINTS = [
     Path("stockfish") / "stockfish-windows-x86-64-bmi2.exe",
     Path(os.environ.get("STOCKFISH_PATH", "")),
 ]
+
+PRESET_SETTINGS = {
+    "Quick": {
+        "root_depth": 20,
+        "shallow_depth": 10,
+        "reply_depth": 18,
+        "continuation_depth": 18,
+        "frontier_width": 2,
+        "tree_max_ply": 24,
+        "tree_node_cap": 1500,
+        "multipv": 3,
+    },
+    "Balanced": {
+        "root_depth": 26,
+        "shallow_depth": 12,
+        "reply_depth": 22,
+        "continuation_depth": 24,
+        "frontier_width": 3,
+        "tree_max_ply": 36,
+        "tree_node_cap": 4000,
+        "multipv": 4,
+    },
+    "Deep": {
+        "root_depth": 32,
+        "shallow_depth": 14,
+        "reply_depth": 28,
+        "continuation_depth": 30,
+        "frontier_width": 4,
+        "tree_max_ply": 52,
+        "tree_node_cap": 12000,
+        "multipv": 5,
+    },
+}
 
 
 class BrilliantMoveFinderApp:
@@ -58,6 +93,7 @@ class BrilliantMoveFinderApp:
         self.tree_ply_var = tk.IntVar(value=int(saved.get("tree_max_ply", 36)))
         self.tree_nodes_var = tk.IntVar(value=int(saved.get("tree_node_cap", 4000)))
         self.multipv_var = tk.IntVar(value=int(saved.get("multipv", 4)))
+        self.preset_var = tk.StringVar(value=saved.get("preset", "Balanced"))
         self.status_var = tk.StringVar(value="Ready.")
         self.summary_var = tk.StringVar(value="No scan yet.")
 
@@ -92,6 +128,7 @@ class BrilliantMoveFinderApp:
             "tree_max_ply": self.tree_ply_var.get(),
             "tree_node_cap": self.tree_nodes_var.get(),
             "multipv": self.multipv_var.get(),
+            "preset": self.preset_var.get(),
         }
         CONFIG_PATH.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
@@ -154,24 +191,35 @@ class BrilliantMoveFinderApp:
             input_frame,
             text="Enter either a FEN or a SAN move list. If both are filled, FEN wins.",
         ).grid(row=4, column=0, sticky="w", padx=8, pady=(0, 8))
+        ttk.Button(input_frame, text="Load PGN", command=self._load_pgn).grid(row=5, column=0, sticky="w", padx=8, pady=(0, 8))
         input_frame.columnconfigure(0, weight=1)
 
         settings_frame = ttk.LabelFrame(parent, text="Search")
         settings_frame.pack(fill="x", pady=(12, 0))
-        self._spin(settings_frame, "Threads", self.threads_var, 1, max(1, os.cpu_count() or 32), 0, 0)
-        self._spin(settings_frame, "Hash (MB)", self.hash_var, 128, 32768, 0, 1)
-        self._spin(settings_frame, "Root depth", self.root_depth_var, 12, 60, 1, 0)
-        self._spin(settings_frame, "Shallow depth", self.shallow_depth_var, 4, 30, 1, 1)
-        self._spin(settings_frame, "Reply depth", self.reply_depth_var, 8, 60, 2, 0)
-        self._spin(settings_frame, "Continuation depth", self.continuation_depth_var, 8, 60, 2, 1)
-        self._spin(settings_frame, "Frontier width", self.frontier_var, 1, 8, 3, 0)
-        self._spin(settings_frame, "Tree max ply", self.tree_ply_var, 2, 120, 3, 1)
-        self._spin(settings_frame, "Tree node cap", self.tree_nodes_var, 50, 100000, 4, 0, increment=50)
-        self._spin(settings_frame, "MultiPV", self.multipv_var, 1, 12, 4, 1)
+        ttk.Label(settings_frame, text="Preset").grid(row=0, column=0, sticky="w", padx=8, pady=(8, 4))
+        preset_box = ttk.Combobox(
+            settings_frame,
+            textvariable=self.preset_var,
+            values=list(PRESET_SETTINGS.keys()),
+            state="readonly",
+            width=12,
+        )
+        preset_box.grid(row=0, column=1, sticky="w", padx=(0, 12), pady=(8, 4))
+        preset_box.bind("<<ComboboxSelected>>", self._apply_preset)
+        self._spin(settings_frame, "Threads", self.threads_var, 1, max(1, os.cpu_count() or 32), 0, 1)
+        self._spin(settings_frame, "Hash (MB)", self.hash_var, 128, 32768, 1, 1)
+        self._spin(settings_frame, "Root depth", self.root_depth_var, 12, 60, 2, 0)
+        self._spin(settings_frame, "Shallow depth", self.shallow_depth_var, 4, 30, 2, 1)
+        self._spin(settings_frame, "Reply depth", self.reply_depth_var, 8, 60, 3, 0)
+        self._spin(settings_frame, "Continuation depth", self.continuation_depth_var, 8, 60, 3, 1)
+        self._spin(settings_frame, "Frontier width", self.frontier_var, 1, 8, 4, 0)
+        self._spin(settings_frame, "Tree max ply", self.tree_ply_var, 2, 120, 4, 1)
+        self._spin(settings_frame, "Tree node cap", self.tree_nodes_var, 50, 100000, 5, 0, increment=50)
+        self._spin(settings_frame, "MultiPV", self.multipv_var, 1, 12, 5, 1)
         ttk.Label(
             settings_frame,
             text="Defaults are tuned for a strong desktop. Push depth/hash higher if you want a heavier search.",
-        ).grid(row=5, column=0, columnspan=4, sticky="w", padx=8, pady=(6, 8))
+        ).grid(row=6, column=0, columnspan=4, sticky="w", padx=8, pady=(6, 8))
 
         actions = ttk.Frame(parent)
         actions.pack(fill="x", pady=(14, 0))
@@ -195,6 +243,7 @@ class BrilliantMoveFinderApp:
 
         self.detail_text = tk.Text(right, wrap="word", font=("Consolas", 11), state="disabled")
         self.detail_text.pack(fill="both", expand=True, padx=8, pady=8)
+        ttk.Button(right, text="Copy Selected Line", command=self._copy_selected_line).pack(anchor="e", padx=8, pady=(0, 8))
 
         log_frame = ttk.LabelFrame(parent, text="Live Search Log")
         log_frame.pack(fill="both", expand=True, pady=(12, 0))
@@ -227,6 +276,44 @@ class BrilliantMoveFinderApp:
         path = filedialog.askopenfilename(title="Select Stockfish executable")
         if path:
             self.engine_path_var.set(path)
+
+    def _load_pgn(self) -> None:
+        path = filedialog.askopenfilename(
+            title="Load PGN game",
+            filetypes=[("PGN files", "*.pgn"), ("All files", "*.*")],
+        )
+        if not path:
+            return
+        try:
+            text = Path(path).read_text(encoding="utf-8")
+            game = chess.pgn.read_game(io.StringIO(text))
+            if game is None:
+                raise ValueError("No PGN game found in that file.")
+            board = game.board()
+            sans: list[str] = []
+            for move in game.mainline_moves():
+                sans.append(board.san(move))
+                board.push(move)
+            self.fen_var.set("")
+            self.moves_var.set(" ".join(sans))
+            self.status_var.set(f"Loaded PGN: {Path(path).name}")
+            self._append_log(f"Loaded PGN with {len(sans)} plies from {path}")
+        except Exception as exc:
+            messagebox.showerror("PGN load failed", str(exc))
+
+    def _apply_preset(self, _event: object | None = None) -> None:
+        preset = PRESET_SETTINGS.get(self.preset_var.get())
+        if not preset:
+            return
+        self.root_depth_var.set(preset["root_depth"])
+        self.shallow_depth_var.set(preset["shallow_depth"])
+        self.reply_depth_var.set(preset["reply_depth"])
+        self.continuation_depth_var.set(preset["continuation_depth"])
+        self.frontier_var.set(preset["frontier_width"])
+        self.tree_ply_var.set(preset["tree_max_ply"])
+        self.tree_nodes_var.set(preset["tree_node_cap"])
+        self.multipv_var.set(preset["multipv"])
+        self.status_var.set(f"Applied {self.preset_var.get()} preset.")
 
     def _append_log(self, message: str) -> None:
         self.log_text.configure(state="normal")
@@ -393,6 +480,17 @@ class BrilliantMoveFinderApp:
         for name, value in asdict(result.flags).items():
             lines.append(f"  - {name}: {value}")
         self._set_details("\n".join(lines))
+
+    def _copy_selected_line(self) -> None:
+        selection = self.results_list.curselection()
+        if not selection:
+            messagebox.showinfo("Nothing selected", "Pick a brilliant result first.")
+            return
+        result = self._results[selection[0]]
+        text = " ".join(result.path_san + [result.move_san])
+        self.root.clipboard_clear()
+        self.root.clipboard_append(text)
+        self.status_var.set("Copied selected line to clipboard.")
 
     def _export_pgn(self) -> None:
         if not self._results or self._last_board is None or self._last_settings is None:

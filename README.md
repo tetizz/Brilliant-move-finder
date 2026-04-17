@@ -5,6 +5,7 @@ A standalone local desktop app for scanning chess positions for candidate brilli
 ## What it does
 
 - loads a position from FEN or SAN move list
+- loads a full PGN game and converts it into the current search line
 - analyzes the position with local Stockfish on your PC
 - searches engine lines for brilliant best-move sacrifices
 - streams brilliant hits live while the scan is running
@@ -54,8 +55,10 @@ python main.py
 ## Features
 
 - high-end local engine settings with editable thread/hash/depth controls
+- quick, balanced, and deep scan presets
 - live scan log
 - result list with detailed flags and compensation breakdown
+- one-click copy for a selected brilliant line
 - cancel support during long searches
 - PGN export for every brilliant line the app finds
 
