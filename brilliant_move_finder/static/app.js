@@ -1,8 +1,18 @@
 const defaults = window.APP_DEFAULTS || {};
 
-const PIECES = {
-  P: "\u2659", N: "\u2658", B: "\u2657", R: "\u2656", Q: "\u2655", K: "\u2654",
-  p: "\u265F", n: "\u265E", b: "\u265D", r: "\u265C", q: "\u265B", k: "\u265A",
+const PIECE_ASSETS = {
+  P: "/static/pieces/cburnett/wP.svg",
+  N: "/static/pieces/cburnett/wN.svg",
+  B: "/static/pieces/cburnett/wB.svg",
+  R: "/static/pieces/cburnett/wR.svg",
+  Q: "/static/pieces/cburnett/wQ.svg",
+  K: "/static/pieces/cburnett/wK.svg",
+  p: "/static/pieces/cburnett/bP.svg",
+  n: "/static/pieces/cburnett/bN.svg",
+  b: "/static/pieces/cburnett/bB.svg",
+  r: "/static/pieces/cburnett/bR.svg",
+  q: "/static/pieces/cburnett/bQ.svg",
+  k: "/static/pieces/cburnett/bK.svg",
 };
 
 const files = ["a", "b", "c", "d", "e", "f", "g", "h"];
@@ -17,6 +27,9 @@ const state = {
   orientation: "white",
   selectedSquare: null,
   draggingFrom: null,
+  setupMode: false,
+  editorPiece: null,
+  editorTurn: "w",
 };
 
 const el = {
@@ -47,6 +60,9 @@ const el = {
   startPosBtn: document.getElementById("startPosBtn"),
   clearBoardBtn: document.getElementById("clearBoardBtn"),
   flipBoardBtn: document.getElementById("flipBoardBtn"),
+  setupModeBtn: document.getElementById("setupModeBtn"),
+  turnToggleBtn: document.getElementById("turnToggleBtn"),
+  piecePalette: document.getElementById("piecePalette"),
   statusText: document.getElementById("statusText"),
   resultCount: document.getElementById("resultCount"),
   progressLog: document.getElementById("progressLog"),
@@ -58,6 +74,7 @@ const el = {
 
 function init() {
   hydrateDefaults();
+  renderPiecePalette();
   renderCoords();
   renderBoard(defaults.fen || "startpos");
   wireEvents();
@@ -111,6 +128,8 @@ function wireEvents() {
   el.startPosBtn.addEventListener("click", setStartPosition);
   el.clearBoardBtn.addEventListener("click", clearBoard);
   el.flipBoardBtn.addEventListener("click", flipBoard);
+  el.setupModeBtn.addEventListener("click", toggleSetupMode);
+  el.turnToggleBtn.addEventListener("click", toggleEditorTurn);
   el.presetSelect.addEventListener("change", (event) => applyPreset(event.target.value));
   el.loadPgnBtn.addEventListener("click", () => el.pgnFileInput.click());
   el.pgnFileInput.addEventListener("change", onPgnSelected);
@@ -151,9 +170,11 @@ async function previewPosition() {
     return;
   }
   state.currentFen = payload.fen;
+  state.editorTurn = parseFenState(payload.fen).turn;
   renderBoard(payload.fen);
   el.boardMeta.textContent = `${payload.legal_move_count} legal moves${payload.is_check ? " | check" : ""}`;
   el.turnBadge.textContent = payload.turn === "white" ? "White to move" : "Black to move";
+  syncTurnButton();
 }
 
 function renderCoords() {
@@ -164,7 +185,7 @@ function renderCoords() {
 }
 
 function renderBoard(fen) {
-  const position = parseFenBoard(fen);
+  const position = parseFenState(fen).squares;
   el.board.innerHTML = "";
   const ordered = orientedBoard(position);
   ordered.forEach(({ piece, squareName }, index) => {
@@ -184,17 +205,25 @@ function renderBoard(fen) {
     square.addEventListener("drop", async (event) => {
       event.preventDefault();
       square.classList.remove("drag-over");
+      const palettePiece = event.dataTransfer.getData("application/x-piece");
       const fromSquare = event.dataTransfer.getData("text/plain") || state.draggingFrom;
-      if (fromSquare) {
+      if (state.setupMode) {
+        if (palettePiece) {
+          applyEditorPiece(squareName, palettePiece === "erase" ? "" : palettePiece);
+        } else if (fromSquare) {
+          moveEditorPiece(fromSquare, squareName);
+        }
+      } else if (fromSquare) {
         await tryBoardMove(fromSquare, squareName);
       }
       state.draggingFrom = null;
     });
     square.addEventListener("click", async () => handleSquareClick(squareName));
     if (piece) {
-      const inner = document.createElement("span");
+      const inner = document.createElement("img");
       inner.className = "piece";
-      inner.textContent = PIECES[piece] || "";
+      inner.src = PIECE_ASSETS[piece] || "";
+      inner.alt = piece;
       inner.draggable = true;
       inner.addEventListener("dragstart", (event) => {
         state.draggingFrom = squareName;
@@ -233,9 +262,14 @@ function orientedBoard(position) {
 }
 
 function parseFenBoard(fen) {
-  const boardPart = (fen || "").split(" ")[0];
+  return parseFenState(fen).squares;
+}
+
+function parseFenState(fen) {
+  const parts = (fen || "").trim().split(/\s+/);
+  const boardPart = parts[0];
   if (!boardPart || boardPart === "startpos") {
-    return parseFenBoard("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
+    return parseFenState("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
   }
   const squares = [];
   boardPart.split("/").forEach((rank) => {
@@ -249,7 +283,10 @@ function parseFenBoard(fen) {
       }
     });
   });
-  return squares;
+  return {
+    squares,
+    turn: parts[1] === "b" ? "b" : "w",
+  };
 }
 
 function collectSettings() {
@@ -268,6 +305,17 @@ function collectSettings() {
 }
 
 async function handleSquareClick(squareName) {
+  if (state.setupMode) {
+    if (state.editorPiece !== null) {
+      applyEditorPiece(squareName, state.editorPiece === "erase" ? "" : state.editorPiece);
+      return;
+    }
+    if (pieceAtSquare(state.currentFen, squareName)) {
+      state.selectedSquare = squareName;
+      renderBoard(state.currentFen);
+    }
+    return;
+  }
   if (!state.selectedSquare) {
     if (pieceAtSquare(state.currentFen, squareName)) {
       state.selectedSquare = squareName;
@@ -300,11 +348,13 @@ async function tryBoardMove(fromSquare, toSquare) {
     return;
   }
   state.currentFen = payload.fen;
+  state.editorTurn = payload.turn === "white" ? "w" : "b";
   el.fenInput.value = payload.fen;
   el.movesInput.value = "";
   renderBoard(payload.fen);
   el.boardMeta.textContent = `${payload.legal_move_count} legal moves${payload.is_check ? " | check" : ""}`;
   el.turnBadge.textContent = payload.turn === "white" ? "White to move" : "Black to move";
+  syncTurnButton();
   setStatus(`Played ${payload.san}`);
 }
 
@@ -317,23 +367,27 @@ function pieceAtSquare(fen, squareName) {
 
 function setStartPosition() {
   state.selectedSquare = null;
+  state.editorTurn = "w";
   state.currentFen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
   el.fenInput.value = state.currentFen;
   el.movesInput.value = "";
   renderBoard(state.currentFen);
   el.boardMeta.textContent = "20 legal moves";
   el.turnBadge.textContent = "White to move";
+  syncTurnButton();
   setStatus("Reset to the starting position.");
 }
 
 function clearBoard() {
   state.selectedSquare = null;
+  state.editorTurn = "w";
   state.currentFen = "8/8/8/8/8/8/8/8 w - - 0 1";
   el.fenInput.value = state.currentFen;
   el.movesInput.value = "";
   renderBoard(state.currentFen);
   el.boardMeta.textContent = "0 legal moves";
   el.turnBadge.textContent = "White to move";
+  syncTurnButton();
   setStatus("Cleared the board.");
 }
 
@@ -342,6 +396,110 @@ function flipBoard() {
   renderCoords();
   renderBoard(state.currentFen);
   setStatus(`Flipped board to ${state.orientation} view.`);
+}
+
+function toggleSetupMode() {
+  state.setupMode = !state.setupMode;
+  state.selectedSquare = null;
+  el.setupModeBtn.textContent = `Setup Mode: ${state.setupMode ? "On" : "Off"}`;
+  el.setupModeBtn.classList.toggle("active", state.setupMode);
+  renderBoard(state.currentFen);
+  renderPiecePalette();
+  setStatus(state.setupMode ? "Setup mode enabled. Drag pieces from the palette or move pieces freely." : "Setup mode disabled. Legal move mode restored.");
+}
+
+function toggleEditorTurn() {
+  state.editorTurn = state.editorTurn === "w" ? "b" : "w";
+  writeEditorFen(parseFenState(state.currentFen).squares);
+  syncTurnButton();
+  el.turnBadge.textContent = state.editorTurn === "w" ? "White to move" : "Black to move";
+  setStatus(`Side to move set to ${state.editorTurn === "w" ? "white" : "black"}.`);
+}
+
+function syncTurnButton() {
+  el.turnToggleBtn.textContent = `Side to move: ${state.editorTurn === "w" ? "White" : "Black"}`;
+}
+
+function renderPiecePalette() {
+  const palettePieces = ["K", "Q", "R", "B", "N", "P", "erase", "k", "q", "r", "b", "n", "p"];
+  el.piecePalette.innerHTML = "";
+  palettePieces.forEach((piece) => {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = `palette-piece${piece === "erase" ? " eraser" : ""}`;
+    btn.classList.toggle("active", state.editorPiece === piece);
+    btn.draggable = true;
+    btn.addEventListener("click", () => {
+      state.editorPiece = state.editorPiece === piece ? null : piece;
+      renderPiecePalette();
+    });
+    btn.addEventListener("dragstart", (event) => {
+      event.dataTransfer.setData("application/x-piece", piece);
+      state.editorPiece = piece;
+      renderPiecePalette();
+    });
+    if (piece === "erase") {
+      btn.textContent = "×";
+      btn.title = "Remove piece";
+    } else {
+      const img = document.createElement("img");
+      img.src = PIECE_ASSETS[piece];
+      img.alt = piece;
+      btn.appendChild(img);
+    }
+    el.piecePalette.appendChild(btn);
+  });
+}
+
+function moveEditorPiece(fromSquare, toSquare) {
+  const fenState = parseFenState(state.currentFen);
+  const fromIndex = squareIndex(fromSquare);
+  const toIndex = squareIndex(toSquare);
+  fenState.squares[toIndex] = fenState.squares[fromIndex];
+  fenState.squares[fromIndex] = "";
+  writeEditorFen(fenState.squares);
+}
+
+function applyEditorPiece(squareName, piece) {
+  const fenState = parseFenState(state.currentFen);
+  fenState.squares[squareIndex(squareName)] = piece;
+  writeEditorFen(fenState.squares);
+}
+
+function writeEditorFen(squares) {
+  state.currentFen = buildFenFromSquares(squares, state.editorTurn);
+  el.fenInput.value = state.currentFen;
+  el.movesInput.value = "";
+  renderBoard(state.currentFen);
+  el.boardMeta.textContent = "Custom setup position";
+  el.turnBadge.textContent = state.editorTurn === "w" ? "White to move" : "Black to move";
+}
+
+function squareIndex(squareName) {
+  const fileIndex = files.indexOf(squareName[0]);
+  const rankIndex = 8 - Number(squareName[1]);
+  return rankIndex * 8 + fileIndex;
+}
+
+function buildFenFromSquares(squares, turn) {
+  const ranksOut = [];
+  for (let rank = 0; rank < 8; rank += 1) {
+    let empty = 0;
+    let text = "";
+    for (let file = 0; file < 8; file += 1) {
+      const piece = squares[(rank * 8) + file];
+      if (!piece) {
+        empty += 1;
+      } else {
+        if (empty) text += String(empty);
+        empty = 0;
+        text += piece;
+      }
+    }
+    if (empty) text += String(empty);
+    ranksOut.push(text);
+  }
+  return `${ranksOut.join("/")} ${turn} - - 0 1`;
 }
 
 async function startScan() {
