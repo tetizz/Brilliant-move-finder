@@ -6,6 +6,7 @@ import os
 import sys
 import threading
 import uuid
+import ctypes
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
@@ -48,9 +49,40 @@ DEFAULT_ENGINE_HINTS = [
     Path(os.environ.get("STOCKFISH_PATH", "")),
 ]
 
+
+def _system_total_ram_mb() -> int:
+    try:
+        class MEMORYSTATUSEX(ctypes.Structure):
+            _fields_ = [
+                ("dwLength", ctypes.c_ulong),
+                ("dwMemoryLoad", ctypes.c_ulong),
+                ("ullTotalPhys", ctypes.c_ulonglong),
+                ("ullAvailPhys", ctypes.c_ulonglong),
+                ("ullTotalPageFile", ctypes.c_ulonglong),
+                ("ullAvailPageFile", ctypes.c_ulonglong),
+                ("ullTotalVirtual", ctypes.c_ulonglong),
+                ("ullAvailVirtual", ctypes.c_ulonglong),
+                ("ullAvailExtendedVirtual", ctypes.c_ulonglong),
+            ]
+
+        status = MEMORYSTATUSEX()
+        status.dwLength = ctypes.sizeof(MEMORYSTATUSEX)
+        if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
+            return max(1024, int(status.ullTotalPhys // (1024 * 1024)))
+    except Exception:
+        pass
+    return 16384
+
+
+TOTAL_RAM_MB = _system_total_ram_mb()
+CPU_THREADS = max(1, os.cpu_count() or 8)
+BALANCED_HASH_MB = max(2048, min(8192, TOTAL_RAM_MB // 8))
+DEEP_HASH_MB = max(8192, min(24576, TOTAL_RAM_MB // 3))
+EXTREME_HASH_MB = max(16384, min(65536, (TOTAL_RAM_MB * 3) // 4))
+
 PRESET_SETTINGS = {
     "Quick": {
-        "threads": max(1, min(8, os.cpu_count() or 8)),
+        "threads": max(1, min(8, CPU_THREADS)),
         "hash_mb": 1024,
         "root_depth": 20,
         "shallow_depth": 10,
@@ -62,8 +94,8 @@ PRESET_SETTINGS = {
         "multipv": 3,
     },
     "Balanced": {
-        "threads": max(1, os.cpu_count() or 8),
-        "hash_mb": 4096,
+        "threads": CPU_THREADS,
+        "hash_mb": BALANCED_HASH_MB,
         "root_depth": 26,
         "shallow_depth": 12,
         "reply_depth": 22,
@@ -74,8 +106,8 @@ PRESET_SETTINGS = {
         "multipv": 4,
     },
     "Deep": {
-        "threads": max(1, os.cpu_count() or 8),
-        "hash_mb": 8192,
+        "threads": CPU_THREADS,
+        "hash_mb": DEEP_HASH_MB,
         "root_depth": 32,
         "shallow_depth": 14,
         "reply_depth": 28,
@@ -83,6 +115,18 @@ PRESET_SETTINGS = {
         "frontier_width": 4,
         "tree_max_ply": 56,
         "tree_node_cap": 12000,
+        "multipv": 5,
+    },
+    "Max RAM": {
+        "threads": CPU_THREADS,
+        "hash_mb": EXTREME_HASH_MB,
+        "root_depth": 34,
+        "shallow_depth": 16,
+        "reply_depth": 30,
+        "continuation_depth": 32,
+        "frontier_width": 4,
+        "tree_max_ply": 64,
+        "tree_node_cap": 18000,
         "multipv": 5,
     },
 }
