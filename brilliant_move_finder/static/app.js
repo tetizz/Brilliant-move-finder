@@ -26,7 +26,9 @@ const state = {
   activeIndex: -1,
   orientation: "white",
   selectedSquare: null,
+  lastMoveSquares: null,
   draggingFrom: null,
+  dragPiece: null,
   setupMode: false,
   editorPiece: null,
   editorTurn: "w",
@@ -133,6 +135,8 @@ function wireEvents() {
   el.presetSelect.addEventListener("change", (event) => applyPreset(event.target.value));
   el.loadPgnBtn.addEventListener("click", () => el.pgnFileInput.click());
   el.pgnFileInput.addEventListener("change", onPgnSelected);
+  document.addEventListener("pointermove", onPointerMove);
+  document.addEventListener("pointerup", onPointerUp);
 }
 
 async function onPgnSelected(event) {
@@ -154,6 +158,7 @@ async function onPgnSelected(event) {
   if (payload.fen) {
     state.currentFen = payload.fen;
     state.editorTurn = payload.turn === "black" ? "b" : "w";
+    state.lastMoveSquares = null;
     renderBoard(payload.fen);
     el.boardMeta.textContent = `${payload.legal_move_count} legal moves${payload.is_check ? " | check" : ""}`;
     el.turnBadge.textContent = payload.turn === "white" ? "White to move" : "Black to move";
@@ -179,6 +184,7 @@ async function previewPosition() {
   }
   state.currentFen = payload.fen;
   state.editorTurn = parseFenState(payload.fen).turn;
+  state.lastMoveSquares = null;
   renderBoard(payload.fen);
   el.boardMeta.textContent = `${payload.legal_move_count} legal moves${payload.is_check ? " | check" : ""}`;
   el.turnBadge.textContent = payload.turn === "white" ? "White to move" : "Black to move";
@@ -202,6 +208,9 @@ function renderBoard(fen) {
     const rank = Math.floor(index / 8);
     square.className = `square ${(file + rank) % 2 === 0 ? "light" : "dark"}`;
     square.dataset.square = squareName;
+    if (state.lastMoveSquares && state.lastMoveSquares.includes(squareName)) {
+      square.classList.add("last-move");
+    }
     if (state.selectedSquare === squareName) {
       square.classList.add("selected");
     }
@@ -233,6 +242,7 @@ function renderBoard(fen) {
       inner.src = PIECE_ASSETS[piece] || "";
       inner.alt = piece;
       inner.draggable = true;
+      inner.dataset.square = squareName;
       inner.addEventListener("dragstart", (event) => {
         state.draggingFrom = squareName;
         event.dataTransfer.setData("text/plain", squareName);
@@ -242,10 +252,70 @@ function renderBoard(fen) {
         state.draggingFrom = null;
         inner.classList.remove("dragging");
       });
+      inner.addEventListener("pointerdown", (event) => beginPointerDrag(event, squareName, piece));
       square.appendChild(inner);
     }
     el.board.appendChild(square);
   });
+}
+
+function beginPointerDrag(event, squareName, piece) {
+  if (event.button !== 0) return;
+  const ghost = document.createElement("img");
+  ghost.className = "piece pointer-ghost";
+  ghost.src = PIECE_ASSETS[piece] || "";
+  ghost.alt = piece;
+  ghost.style.left = `${event.clientX}px`;
+  ghost.style.top = `${event.clientY}px`;
+  document.body.appendChild(ghost);
+  state.draggingFrom = squareName;
+  state.dragPiece = { ghost, piece, source: squareName };
+  event.currentTarget.classList.add("dragging");
+  event.preventDefault();
+}
+
+function onPointerMove(event) {
+  if (!state.dragPiece) return;
+  state.dragPiece.ghost.style.left = `${event.clientX}px`;
+  state.dragPiece.ghost.style.top = `${event.clientY}px`;
+  const square = squareFromPoint(event.clientX, event.clientY);
+  highlightDropSquare(square);
+}
+
+async function onPointerUp(event) {
+  if (!state.dragPiece) return;
+  const sourceSquare = state.dragPiece.source;
+  cleanupPointerDrag();
+  const targetSquare = squareFromPoint(event.clientX, event.clientY);
+  if (!targetSquare || targetSquare === sourceSquare) return;
+  if (state.setupMode) {
+    moveEditorPiece(sourceSquare, targetSquare);
+  } else {
+    await tryBoardMove(sourceSquare, targetSquare);
+  }
+}
+
+function cleanupPointerDrag() {
+  if (!state.dragPiece) return;
+  state.dragPiece.ghost.remove();
+  document.querySelectorAll(".piece.dragging").forEach((piece) => piece.classList.remove("dragging"));
+  highlightDropSquare(null);
+  state.dragPiece = null;
+  state.draggingFrom = null;
+}
+
+function squareFromPoint(x, y) {
+  const element = document.elementFromPoint(x, y);
+  if (!element) return null;
+  const square = element.closest(".square");
+  return square ? square.dataset.square : null;
+}
+
+function highlightDropSquare(squareName) {
+  document.querySelectorAll(".square.drag-over").forEach((square) => square.classList.remove("drag-over"));
+  if (!squareName) return;
+  const square = el.board.querySelector(`.square[data-square="${squareName}"]`);
+  if (square) square.classList.add("drag-over");
 }
 
 function orientedBoard(position) {
@@ -357,6 +427,7 @@ async function tryBoardMove(fromSquare, toSquare) {
   }
   state.currentFen = payload.fen;
   state.editorTurn = payload.turn === "white" ? "w" : "b";
+  state.lastMoveSquares = [fromSquare, toSquare];
   el.fenInput.value = payload.fen;
   el.movesInput.value = "";
   renderBoard(payload.fen);
@@ -377,6 +448,7 @@ function setStartPosition() {
   state.selectedSquare = null;
   state.editorTurn = "w";
   state.currentFen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
+  state.lastMoveSquares = null;
   el.fenInput.value = state.currentFen;
   el.movesInput.value = "";
   renderBoard(state.currentFen);
@@ -390,6 +462,7 @@ function clearBoard() {
   state.selectedSquare = null;
   state.editorTurn = "w";
   state.currentFen = "8/8/8/8/8/8/8/8 w - - 0 1";
+  state.lastMoveSquares = null;
   el.fenInput.value = state.currentFen;
   el.movesInput.value = "";
   renderBoard(state.currentFen);
@@ -465,12 +538,14 @@ function moveEditorPiece(fromSquare, toSquare) {
   const toIndex = squareIndex(toSquare);
   fenState.squares[toIndex] = fenState.squares[fromIndex];
   fenState.squares[fromIndex] = "";
+  state.lastMoveSquares = [fromSquare, toSquare];
   writeEditorFen(fenState.squares);
 }
 
 function applyEditorPiece(squareName, piece) {
   const fenState = parseFenState(state.currentFen);
   fenState.squares[squareIndex(squareName)] = piece;
+  state.lastMoveSquares = [squareName];
   writeEditorFen(fenState.squares);
 }
 

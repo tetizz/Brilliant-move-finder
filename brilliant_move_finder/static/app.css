@@ -333,6 +333,9 @@ input:focus, textarea:focus, select:focus {
 
 .square.light { background: var(--light-sq); }
 .square.dark { background: var(--dark-sq); }
+.square.last-move {
+  box-shadow: inset 0 0 0 999px rgba(246, 246, 105, .35);
+}
 .square.drag-over {
   box-shadow: inset 0 0 0 3px rgba(126,168,196,.58);
 }
@@ -352,6 +355,15 @@ input:focus, textarea:focus, select:focus {
 
 .piece.dragging {
   opacity: .4;
+}
+
+.pointer-ghost {
+  position: fixed;
+  z-index: 9999;
+  width: calc(var(--sq) * .92);
+  height: calc(var(--sq) * .92);
+  pointer-events: none;
+  transform: translate(-50%, -50%);
 }
 
 .piece-palette {
