@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Brilliant Move Finder</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}">
+</head>
+<body>
+  <script>
+    window.APP_DEFAULTS = {{ defaults|tojson }};
+  </script>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <div class="panel hero">
+        <div class="eyebrow">Local Native Engine</div>
+        <h1>Brilliant Move Finder</h1>
+        <p>HTML board, local Stockfish, live brilliant hits, and PGN export from your own machine.</p>
+      </div>
+
+      <div class="panel">
+        <div class="panel-title">Engine</div>
+        <label class="field">
+          <span>Stockfish executable</span>
+          <input id="enginePath" type="text" placeholder="C:\path\to\stockfish.exe">
+        </label>
+      </div>
+
+      <div class="panel">
+        <div class="panel-title">Position</div>
+        <label class="field">
+          <span>FEN</span>
+          <textarea id="fenInput" rows="3" placeholder="Optional FEN"></textarea>
+        </label>
+        <label class="field">
+          <span>Moves from start (SAN)</span>
+          <textarea id="movesInput" rows="5" placeholder="e4 e5 Nf3 Nc6 Bb5 ..."></textarea>
+        </label>
+        <div class="button-row">
+          <button id="previewBtn" class="btn ghost">Preview Position</button>
+          <button id="loadPgnBtn" class="btn ghost">Load PGN</button>
+          <input id="pgnFileInput" type="file" accept=".pgn" hidden>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-title">Search</div>
+        <label class="field">
+          <span>Preset</span>
+          <select id="presetSelect"></select>
+        </label>
+        <div class="grid two">
+          <label class="field"><span>Threads</span><input id="threadsInput" type="number" min="1"></label>
+          <label class="field"><span>Hash (MB)</span><input id="hashInput" type="number" min="128"></label>
+          <label class="field"><span>Root depth</span><input id="rootDepthInput" type="number" min="1"></label>
+          <label class="field"><span>Shallow depth</span><input id="shallowDepthInput" type="number" min="1"></label>
+          <label class="field"><span>Reply depth</span><input id="replyDepthInput" type="number" min="1"></label>
+          <label class="field"><span>Continuation depth</span><input id="continuationDepthInput" type="number" min="1"></label>
+          <label class="field"><span>Frontier width</span><input id="frontierInput" type="number" min="1"></label>
+          <label class="field"><span>Tree max ply</span><input id="treePlyInput" type="number" min="1"></label>
+          <label class="field"><span>Tree node cap</span><input id="treeNodesInput" type="number" min="1"></label>
+          <label class="field"><span>MultiPV</span><input id="multipvInput" type="number" min="1"></label>
+        </div>
+        <div class="button-row">
+          <button id="scanBtn" class="btn primary">Find Brilliant Moves</button>
+          <button id="cancelBtn" class="btn ghost">Cancel</button>
+        </div>
+      </div>
+    </aside>
+
+    <main class="main">
+      <section class="top-grid">
+        <div class="panel board-panel">
+          <div class="panel-head">
+            <div>
+              <div class="panel-title">Board</div>
+              <div id="boardMeta" class="subtle">Load a position to preview it here.</div>
+            </div>
+            <div id="turnBadge" class="badge">White to move</div>
+          </div>
+          <div class="board-shell">
+            <div class="coords ranks" id="rankLabels"></div>
+            <div class="board-stack">
+              <div class="board" id="board"></div>
+              <div class="coords files" id="fileLabels"></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-head">
+            <div>
+              <div class="panel-title">Live Search</div>
+              <div id="statusText" class="subtle">Ready.</div>
+            </div>
+            <div id="resultCount" class="badge muted">0 hits</div>
+          </div>
+          <div id="progressLog" class="log"></div>
+          <div class="button-row top-pad">
+            <a id="exportPgnBtn" class="btn ghost disabled" href="#" download>Export PGN</a>
+            <a id="exportJsonBtn" class="btn ghost disabled" href="#" download>Export JSON</a>
+          </div>
+        </div>
+      </section>
+
+      <section class="results-layout">
+        <div class="panel">
+          <div class="panel-title">Brilliant Moves Found</div>
+          <div id="resultsList" class="results-list empty-state">No brilliant moves yet.</div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-title">Details</div>
+          <div id="detailsView" class="details empty-state">Select a result to inspect the line, flags, and defense tree.</div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>

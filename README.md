@@ -1,13 +1,14 @@
 # Brilliant Move Finder
 
-A standalone local desktop app for scanning chess positions for candidate brilliant moves using a local Stockfish engine.
+A standalone local app for scanning chess positions for candidate brilliant moves using a local Stockfish engine and an HTML board interface in your browser.
 
 ## What it does
 
+- launches a local browser UI automatically
+- renders the current position on an HTML chess board
 - loads a position from FEN or SAN move list
 - loads a full PGN game and converts it into the current search line
 - previews the current board state before you start a search
-- saves and reloads full scan sessions
 - analyzes the position with local Stockfish on your PC
 - searches engine lines for brilliant best-move sacrifices
 - streams brilliant hits live while the scan is running
@@ -49,6 +50,8 @@ Recommended:
 python main.py
 ```
 
+The app starts a local server on `http://127.0.0.1:8765` and opens it in your browser.
+
 ## Input options
 
 - FEN
@@ -60,14 +63,12 @@ python main.py
 - quick, balanced, and deep scan presets
 - live scan log
 - position preview with FEN, side to move, and board snapshot
-- save/load session snapshots for long analysis setups
 - result list with detailed flags and compensation breakdown
-- "why this is brilliant" explanation block for each hit
-- one-click copy for a selected brilliant line
 - cancel support during long searches
 - PGN export for every brilliant line the app finds
+- JSON export for the full result set
 
 ## Notes
 
-- This app is designed for local desktop use, not browser-only analysis.
+- This app uses a browser UI, but all analysis is still local on your machine.
 - Use a strong local Stockfish binary for best results.
