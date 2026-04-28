@@ -26,6 +26,8 @@ const state = {
   activeIndex: -1,
   orientation: "white",
   selectedSquare: null,
+  legalMoves: [],
+  classificationOverlay: null,
   lastMoveSquares: null,
   draggingFrom: null,
   dragPiece: null,
@@ -50,6 +52,7 @@ const el = {
   treePlyInput: document.getElementById("treePlyInput"),
   treeNodesInput: document.getElementById("treeNodesInput"),
   multipvInput: document.getElementById("multipvInput"),
+  thinkTimeInput: document.getElementById("thinkTimeInput"),
   previewBtn: document.getElementById("previewBtn"),
   loadPgnBtn: document.getElementById("loadPgnBtn"),
   pgnFileInput: document.getElementById("pgnFileInput"),
@@ -69,8 +72,14 @@ const el = {
   statusText: document.getElementById("statusText"),
   resultCount: document.getElementById("resultCount"),
   progressLog: document.getElementById("progressLog"),
-  resultsList: document.getElementById("resultsList"),
+  highResultsList: document.getElementById("highResultsList"),
+  lowResultsList: document.getElementById("lowResultsList"),
   detailsView: document.getElementById("detailsView"),
+  analysisEval: document.getElementById("analysisEval"),
+  engineLines: document.getElementById("engineLines"),
+  databaseMoves: document.getElementById("databaseMoves"),
+  moveReview: document.getElementById("moveReview"),
+  pgnPathView: document.getElementById("pgnPathView"),
   exportPgnBtn: document.getElementById("exportPgnBtn"),
   exportJsonBtn: document.getElementById("exportJsonBtn"),
 };
@@ -117,6 +126,7 @@ function setNumericFields(settings) {
   el.treePlyInput.value = settings.tree_max_ply;
   el.treeNodesInput.value = settings.tree_node_cap;
   el.multipvInput.value = settings.multipv;
+  el.thinkTimeInput.value = settings.think_time_ms || 5000;
 }
 
 function applyPreset(name, announce = true) {
@@ -191,6 +201,8 @@ async function onPgnSelected(event) {
   if (payload.fen) {
     state.currentFen = payload.fen;
     state.editorTurn = payload.turn === "black" ? "b" : "w";
+    state.legalMoves = payload.legal_moves || [];
+    state.classificationOverlay = null;
     state.lastMoveSquares = null;
     renderBoard(payload.fen);
     el.boardMeta.textContent = `${payload.legal_move_count} legal moves${payload.is_check ? " | check" : ""}`;
@@ -217,11 +229,14 @@ async function previewPosition() {
   }
   state.currentFen = payload.fen;
   state.editorTurn = parseFenState(payload.fen).turn;
+  state.legalMoves = payload.legal_moves || [];
+  state.classificationOverlay = null;
   state.lastMoveSquares = null;
   renderBoard(payload.fen);
   el.boardMeta.textContent = `${payload.legal_move_count} legal moves${payload.is_check ? " | check" : ""}`;
   el.turnBadge.textContent = payload.turn === "white" ? "White to move" : "Black to move";
   syncTurnButton();
+  await refreshAnalysis();
 }
 
 function renderCoords() {
@@ -247,6 +262,8 @@ function renderBoard(fen) {
     if (state.selectedSquare === squareName) {
       square.classList.add("selected");
     }
+    applyMoveDot(square, squareName);
+    applyClassificationOverlay(square, squareName);
     square.addEventListener("dragover", (event) => {
       event.preventDefault();
       square.classList.add("drag-over");
@@ -277,6 +294,10 @@ function renderBoard(fen) {
       inner.draggable = true;
       inner.dataset.square = squareName;
       inner.addEventListener("dragstart", (event) => {
+        if (!canSelectPiece(piece) && !state.setupMode) {
+          event.preventDefault();
+          return;
+        }
         state.draggingFrom = squareName;
         event.dataTransfer.setData("text/plain", squareName);
         inner.classList.add("dragging");
@@ -292,8 +313,34 @@ function renderBoard(fen) {
   });
 }
 
+function applyMoveDot(square, squareName) {
+  if (!state.selectedSquare || state.setupMode) return;
+  const legal = state.legalMoves.find((move) => move.from === state.selectedSquare && move.to === squareName);
+  if (!legal) return;
+  const dot = document.createElement("span");
+  dot.className = legal.capture ? "legal-dot capture-dot" : "legal-dot";
+  square.appendChild(dot);
+}
+
+function applyClassificationOverlay(square, squareName) {
+  const overlay = state.classificationOverlay;
+  if (!overlay) return;
+  const involved = [overlay.from, overlay.to].includes(squareName);
+  if (!involved) return;
+  square.classList.add("classified-square");
+  square.style.setProperty("--classification-color", overlay.color || "#8bc34a");
+  if (squareName === overlay.to) {
+    const badge = document.createElement("span");
+    badge.className = "classification-badge";
+    badge.style.setProperty("--classification-color", overlay.color || "#8bc34a");
+    badge.textContent = overlay.symbol || overlay.label?.slice(0, 1) || "!";
+    square.appendChild(badge);
+  }
+}
+
 function beginPointerDrag(event, squareName, piece) {
   if (event.button !== 0) return;
+  if (!state.setupMode && !canSelectPiece(piece)) return;
   const ghost = document.createElement("img");
   ghost.className = "piece pointer-ghost";
   ghost.src = PIECE_ASSETS[piece] || "";
@@ -412,6 +459,7 @@ function collectSettings() {
     tree_max_ply: Number(el.treePlyInput.value),
     tree_node_cap: Number(el.treeNodesInput.value),
     multipv: Number(el.multipvInput.value),
+    think_time_ms: Number(el.thinkTimeInput.value),
   };
 }
 
@@ -428,7 +476,8 @@ async function handleSquareClick(squareName) {
     return;
   }
   if (!state.selectedSquare) {
-    if (pieceAtSquare(state.currentFen, squareName)) {
+    const piece = pieceAtSquare(state.currentFen, squareName);
+    if (piece && canSelectPiece(piece)) {
       state.selectedSquare = squareName;
       renderBoard(state.currentFen);
     }
@@ -443,14 +492,30 @@ async function handleSquareClick(squareName) {
 }
 
 async function tryBoardMove(fromSquare, toSquare) {
-  const response = await fetch("/api/move", {
+  const movingPiece = pieceAtSquare(state.currentFen, fromSquare);
+  if (!state.setupMode && !canSelectPiece(movingPiece)) {
+    setStatus("That is not the side to move.");
+    return;
+  }
+  const legal = state.legalMoves.find((move) => move.from === fromSquare && move.to === toSquare);
+  if (!legal) {
+    setStatus("That destination is not legal in the current position.");
+    return;
+  }
+  setStatus("Analyzing move...");
+  const response = await fetch("/api/analyze-position", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
+      engine_path: el.enginePath.value.trim(),
       fen: state.currentFen,
-      from: fromSquare,
-      to: toSquare,
-      promotion: "q",
+      settings: collectSettings(),
+      move: {
+        from: fromSquare,
+        to: toSquare,
+        promotion: "q",
+      },
+      pgn_path: currentPgnPath(),
     }),
   });
   const payload = await response.json();
@@ -460,14 +525,34 @@ async function tryBoardMove(fromSquare, toSquare) {
   }
   state.currentFen = payload.fen;
   state.editorTurn = payload.turn === "white" ? "w" : "b";
+  state.legalMoves = payload.legal_moves || [];
+  const classification = payload.played_classification;
+  state.classificationOverlay = classification ? {
+    from: fromSquare,
+    to: toSquare,
+    label: classification.label,
+    symbol: classification.symbol,
+    color: classification.color,
+  } : null;
   state.lastMoveSquares = [fromSquare, toSquare];
   el.fenInput.value = payload.fen;
-  el.movesInput.value = "";
+  el.movesInput.value = `${el.movesInput.value.trim()} ${payload.played_san || legal.san}`.trim();
   renderBoard(payload.fen);
   el.boardMeta.textContent = `${payload.legal_move_count} legal moves${payload.is_check ? " | check" : ""}`;
   el.turnBadge.textContent = payload.turn === "white" ? "White to move" : "Black to move";
   syncTurnButton();
-  setStatus(`Played ${payload.san}`);
+  renderAnalysis(payload);
+  setStatus(`Played ${payload.played_san || legal.san}`);
+}
+
+function canSelectPiece(piece) {
+  if (!piece) return false;
+  const turn = parseFenState(state.currentFen).turn;
+  return turn === "w" ? piece === piece.toUpperCase() : piece === piece.toLowerCase();
+}
+
+function currentPgnPath() {
+  return el.movesInput.value.trim();
 }
 
 function pieceAtSquare(fen, squareName) {
@@ -481,6 +566,8 @@ function setStartPosition() {
   state.selectedSquare = null;
   state.editorTurn = "w";
   state.currentFen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
+  state.legalMoves = [];
+  state.classificationOverlay = null;
   state.lastMoveSquares = null;
   el.fenInput.value = state.currentFen;
   el.movesInput.value = "";
@@ -495,6 +582,8 @@ function clearBoard() {
   state.selectedSquare = null;
   state.editorTurn = "w";
   state.currentFen = "8/8/8/8/8/8/8/8 w - - 0 1";
+  state.legalMoves = [];
+  state.classificationOverlay = null;
   state.lastMoveSquares = null;
   el.fenInput.value = state.currentFen;
   el.movesInput.value = "";
@@ -584,6 +673,8 @@ function applyEditorPiece(squareName, piece) {
 
 function writeEditorFen(squares) {
   state.currentFen = buildFenFromSquares(squares, state.editorTurn);
+  state.legalMoves = [];
+  state.classificationOverlay = null;
   el.fenInput.value = state.currentFen;
   el.movesInput.value = "";
   renderBoard(state.currentFen);
@@ -680,8 +771,8 @@ function updateJobView(job) {
 function renderResults(results) {
   state.results = results;
   if (!results.length) {
-    el.resultsList.className = "results-list empty-state";
-    el.resultsList.textContent = "No brilliant moves yet.";
+    renderResultBucket(el.highResultsList, [], "No high confidence brilliants yet.");
+    renderResultBucket(el.lowResultsList, [], "No low confidence candidates yet.");
     if (state.activeIndex === -1) {
       el.detailsView.className = "details empty-state";
       el.detailsView.textContent = "Select a result to inspect the line, flags, and defense tree.";
@@ -693,30 +784,52 @@ function renderResults(results) {
     state.activeIndex = 0;
   }
 
-  el.resultsList.className = "results-list";
-  el.resultsList.innerHTML = results.map((result, index) => `
+  const high = results.filter((result) => (result.confidence_bucket || "high") === "high");
+  const low = results.filter((result) => (result.confidence_bucket || "high") !== "high");
+  renderResultBucket(el.highResultsList, high, "No high confidence brilliants yet.");
+  renderResultBucket(el.lowResultsList, low, "No low confidence candidates yet.");
+  renderDetails(results[state.activeIndex]);
+}
+
+function renderResultBucket(container, results, emptyText) {
+  if (!results.length) {
+    container.className = "results-list compact-list empty-state";
+    container.textContent = emptyText;
+    return;
+  }
+  container.className = "results-list compact-list";
+  container.innerHTML = results.map((result) => {
+    const index = state.results.indexOf(result);
+    return `
     <article class="result-card ${index === state.activeIndex ? "active" : ""}" data-index="${index}">
       <div class="result-title">${escapeHtml(result.move_san)}</div>
       <div class="result-meta">
+        <span class="pill ${escapeHtml(result.classification_key || "brilliant")}">${escapeHtml(result.classification_label || "Brilliant")}</span>
         <span class="pill">${escapeHtml(result.compensation_type)}</span>
         <span class="pill">${escapeHtml(result.sacrifice_category)}</span>
         <span class="pill">Sac ${escapeHtml(String(result.sacrifice_value))}</span>
       </div>
       <div class="result-meta">
-        <span>${escapeHtml(result.path_label)}</span>
+        <span>${escapeHtml(result.pgn_path || result.path_label)}</span>
+        <button class="mini-btn analyze-result" data-index="${index}" type="button">Analyze</button>
       </div>
     </article>
-  `).join("");
+  `}).join("");
 
-  el.resultsList.querySelectorAll(".result-card").forEach((node) => {
+  container.querySelectorAll(".result-card").forEach((node) => {
     node.addEventListener("click", () => {
       state.activeIndex = Number(node.dataset.index);
       renderResults(state.results);
       renderDetails(state.results[state.activeIndex]);
     });
   });
-
-  renderDetails(results[state.activeIndex]);
+  container.querySelectorAll(".analyze-result").forEach((node) => {
+    node.addEventListener("click", (event) => {
+      event.stopPropagation();
+      const result = state.results[Number(node.dataset.index)];
+      loadResultOnBoard(result);
+    });
+  });
 }
 
 function renderDetails(result) {
@@ -754,6 +867,98 @@ function renderDetails(result) {
   `;
 }
 
+async function loadResultOnBoard(result) {
+  if (!result?.fen) return;
+  state.currentFen = result.fen;
+  state.editorTurn = parseFenState(result.fen).turn;
+  state.lastMoveSquares = null;
+  state.classificationOverlay = null;
+  el.fenInput.value = result.fen;
+  el.movesInput.value = result.pgn_path || result.path_label || "";
+  renderBoard(state.currentFen);
+  setStatus(`Loaded ${result.move_san} on the analysis board.`);
+  await refreshAnalysis();
+}
+
+async function refreshAnalysis() {
+  if (!el.enginePath.value.trim()) return;
+  el.analysisEval.textContent = "Loading";
+  el.engineLines.className = "analysis-list empty-state";
+  el.engineLines.textContent = "Loading Stockfish lines...";
+  el.databaseMoves.className = "analysis-list empty-state";
+  el.databaseMoves.textContent = "Loading database moves...";
+  const response = await fetch("/api/analyze-position", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      engine_path: el.enginePath.value.trim(),
+      fen: state.currentFen,
+      settings: collectSettings(),
+      pgn_path: currentPgnPath(),
+    }),
+  });
+  const payload = await response.json();
+  if (!response.ok) {
+    setStatus(payload.error || "Live analysis failed.");
+    return;
+  }
+  state.currentFen = payload.fen;
+  state.editorTurn = payload.turn === "white" ? "w" : "b";
+  state.legalMoves = payload.legal_moves || [];
+  renderBoard(state.currentFen);
+  renderAnalysis(payload);
+}
+
+function renderAnalysis(payload) {
+  el.analysisEval.textContent = payload.eval?.display || "0.00";
+  el.boardMeta.textContent = `${payload.legal_move_count} legal moves${payload.is_check ? " | check" : ""}${payload.opening_name ? ` | ${payload.opening_name}` : ""}`;
+  el.turnBadge.textContent = payload.turn === "white" ? "White to move" : "Black to move";
+  el.pgnPathView.textContent = payload.pgn_path || currentPgnPath() || "No played line yet.";
+  if (payload.played_classification) {
+    const cls = payload.played_classification;
+    el.moveReview.innerHTML = `<span class="classification-chip" style="--classification-color:${escapeHtml(cls.color)}">${escapeHtml(cls.symbol)} ${escapeHtml(cls.label)}</span> ${escapeHtml(payload.played_san || "Move")}: ${escapeHtml(cls.reason)}`;
+  }
+  renderEngineLines(payload.engine_lines || []);
+  renderDatabaseMoves(payload.database || {});
+}
+
+function renderEngineLines(lines) {
+  if (!lines.length) {
+    el.engineLines.className = "analysis-list empty-state";
+    el.engineLines.textContent = "No engine lines available.";
+    return;
+  }
+  el.engineLines.className = "analysis-list";
+  el.engineLines.innerHTML = lines.map((line) => {
+    const cls = line.classification || {};
+    return `
+      <div class="analysis-line">
+        <span class="eval-box">${escapeHtml(line.eval?.display || "")}</span>
+        <span class="classification-chip tiny" style="--classification-color:${escapeHtml(cls.color || "#8bc34a")}">${escapeHtml(cls.symbol || "")} ${escapeHtml(cls.label || "")}</span>
+        <strong>${escapeHtml(line.move_san || "")}</strong>
+        <span>${escapeHtml(line.pv_san || "")}</span>
+      </div>
+    `;
+  }).join("");
+}
+
+function renderDatabaseMoves(database) {
+  const moves = database.moves || [];
+  if (!moves.length) {
+    el.databaseMoves.className = "analysis-list empty-state";
+    el.databaseMoves.textContent = database.error || "No database moves for this position.";
+    return;
+  }
+  el.databaseMoves.className = "analysis-list";
+  el.databaseMoves.innerHTML = moves.map((move) => `
+    <div class="analysis-line">
+      <strong>${escapeHtml(move.san || move.uci)}</strong>
+      <span>${escapeHtml(String(move.games || 0))} games</span>
+      <span>${escapeHtml(String(move.white || 0))}-${escapeHtml(String(move.draws || 0))}-${escapeHtml(String(move.black || 0))}</span>
+    </div>
+  `).join("");
+}
+
 function updateExports(job) {
   if (job.result_count > 0) {
     el.exportPgnBtn.classList.remove("disabled");
@@ -778,8 +983,8 @@ function clearPolling() {
 function resetResults() {
   state.results = [];
   state.activeIndex = -1;
-  el.resultsList.className = "results-list empty-state";
-  el.resultsList.textContent = "Search running...";
+  renderResultBucket(el.highResultsList, [], "Search running...");
+  renderResultBucket(el.lowResultsList, [], "Search running...");
   el.detailsView.className = "details empty-state";
   el.detailsView.textContent = "Waiting for the first brilliant hit.";
   el.progressLog.textContent = "";

@@ -9,4 +9,6 @@ exports/
 config.json
 build/
 dist/
+release/
+_refs/
 *.spec

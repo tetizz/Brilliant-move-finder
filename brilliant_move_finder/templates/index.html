@@ -71,6 +71,7 @@
           <label class="field compact"><span>Tree max ply</span><input id="treePlyInput" type="number" min="1"></label>
           <label class="field compact"><span>Tree node cap</span><input id="treeNodesInput" type="number" min="1"></label>
           <label class="field compact"><span>MultiPV</span><input id="multipvInput" type="number" min="1"></label>
+          <label class="field compact"><span>Thinking time (ms)</span><input id="thinkTimeInput" type="number" min="250"></label>
         </div>
         <div class="button-row">
           <button id="scanBtn" class="hbtn primary strong">Find Brilliant Moves</button>
@@ -85,7 +86,7 @@
           <div class="surface-head">
             <div>
               <div class="surface-kicker">Board</div>
-              <div class="surface-title">Current Position</div>
+              <div class="surface-title">Analysis Board</div>
             </div>
             <div id="turnBadge" class="status-pill">White to move</div>
           </div>
@@ -111,8 +112,12 @@
                 <div id="boardMeta" class="info-value">Load a position to preview it here.</div>
               </div>
               <div class="info-card">
-                <div class="info-label">Preview note</div>
-                <div class="info-value">The board updates from FEN or SAN before you launch the scan.</div>
+                <div class="info-label">Move review</div>
+                <div id="moveReview" class="info-value">Move classifications appear after you play a move.</div>
+              </div>
+              <div class="info-card">
+                <div class="info-label">PGN path</div>
+                <div id="pgnPathView" class="info-value mono-soft">No played line yet.</div>
               </div>
             </div>
           </div>
@@ -131,6 +136,28 @@
         </article>
       </section>
 
+      <section class="analysis-grid">
+        <article class="surface analysis-surface">
+          <div class="surface-head">
+            <div>
+              <div class="surface-kicker">Analysis</div>
+              <div class="surface-title">Live engine and database</div>
+            </div>
+            <div id="analysisEval" class="status-pill muted">Waiting</div>
+          </div>
+          <div class="analysis-columns">
+            <div>
+              <div class="detail-heading">Stockfish lines</div>
+              <div id="engineLines" class="analysis-list empty-state">Engine lines will show here.</div>
+            </div>
+            <div>
+              <div class="detail-heading">Lichess database</div>
+              <div id="databaseMoves" class="analysis-list empty-state">Database moves will show here.</div>
+            </div>
+          </div>
+        </article>
+      </section>
+
       <section class="results-grid">
         <article class="surface">
           <div class="surface-head">
@@ -139,7 +166,14 @@
               <div class="surface-title">Brilliant Moves Found</div>
             </div>
           </div>
-          <div id="resultsList" class="results-list empty-state">No brilliant moves yet.</div>
+          <details open class="bucket">
+            <summary>High confidence brilliant</summary>
+            <div id="highResultsList" class="results-list compact-list empty-state">No high confidence brilliants yet.</div>
+          </details>
+          <details class="bucket">
+            <summary>Low confidence candidates</summary>
+            <div id="lowResultsList" class="results-list compact-list empty-state">No low confidence candidates yet.</div>
+          </details>
         </article>
 
         <article class="surface">

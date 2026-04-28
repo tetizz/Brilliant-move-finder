@@ -11,6 +11,7 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 from urllib.error import URLError
+from urllib.parse import urlencode
 from urllib.request import urlopen
 
 import chess
@@ -21,12 +22,14 @@ import webview
 if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
     from brilliant_move_finder.analyzer import board_from_input
-    from brilliant_move_finder.engine import StockfishSession
+    from brilliant_move_finder.classifications import classify_move, get_opening_name
+    from brilliant_move_finder.engine import EvalResult, StockfishSession, pv_to_san
     from brilliant_move_finder.logic import BrilliantResult, CancelledError, SearchSettings, find_brilliant_moves
     from brilliant_move_finder.report import export_results_to_json, export_results_to_pgn
 else:
     from .analyzer import board_from_input
-    from .engine import StockfishSession
+    from .classifications import classify_move, get_opening_name
+    from .engine import EvalResult, StockfishSession, pv_to_san
     from .logic import BrilliantResult, CancelledError, SearchSettings, find_brilliant_moves
     from .report import export_results_to_json, export_results_to_pgn
 
@@ -83,7 +86,7 @@ DEEP_HASH_MB = max(8192, min(24576, TOTAL_RAM_MB // 3))
 EXTREME_HASH_MB = max(16384, SAFE_HASH_MB)
 
 PRESET_SETTINGS = {
-    "Quick": {
+        "Quick": {
         "threads": max(1, min(8, CPU_THREADS)),
         "hash_mb": 1024,
         "root_depth": 20,
@@ -94,6 +97,7 @@ PRESET_SETTINGS = {
         "tree_max_ply": 24,
         "tree_node_cap": 1600,
         "multipv": 3,
+        "think_time_ms": 3000,
     },
     "Balanced": {
         "threads": CPU_THREADS,
@@ -106,6 +110,7 @@ PRESET_SETTINGS = {
         "tree_max_ply": 36,
         "tree_node_cap": 4000,
         "multipv": 4,
+        "think_time_ms": 5000,
     },
     "Deep": {
         "threads": CPU_THREADS,
@@ -118,6 +123,7 @@ PRESET_SETTINGS = {
         "tree_max_ply": 56,
         "tree_node_cap": 12000,
         "multipv": 5,
+        "think_time_ms": 10000,
     },
     "Max RAM": {
         "threads": CPU_THREADS,
@@ -130,6 +136,7 @@ PRESET_SETTINGS = {
         "tree_max_ply": 64,
         "tree_node_cap": 18000,
         "multipv": 5,
+        "think_time_ms": 20000,
     },
 }
 
@@ -159,6 +166,7 @@ def _result_to_dict(result: BrilliantResult) -> dict[str, Any]:
     data = asdict(result)
     data["line_san"] = " ".join(result.path_san + [result.move_san])
     data["path_label"] = " ".join(result.path_san) if result.path_san else "(starting position)"
+    data["pgn_path"] = data.get("pgn_path") or data["line_san"]
     return data
 
 
@@ -267,7 +275,156 @@ def _build_settings(payload: dict[str, Any]) -> SearchSettings:
         tree_max_ply=max(1, int(payload.get("tree_max_ply", PRESET_SETTINGS["Balanced"]["tree_max_ply"]))),
         tree_node_cap=max(1, int(payload.get("tree_node_cap", PRESET_SETTINGS["Balanced"]["tree_node_cap"]))),
         multipv=max(1, int(payload.get("multipv", PRESET_SETTINGS["Balanced"]["multipv"]))),
+        think_time_ms=max(250, int(payload.get("think_time_ms", PRESET_SETTINGS["Balanced"]["think_time_ms"]))),
     )
+
+
+def _eval_to_dict(result: EvalResult) -> dict[str, Any]:
+    return {
+        "cp": result.cp,
+        "score_type": result.score_type,
+        "value": result.value,
+        "display": _format_eval(result),
+    }
+
+
+def _format_eval(result: EvalResult) -> str:
+    if result.score_type == "mate":
+        if result.value == 0:
+            return "#0"
+        return f"{'#' if result.value > 0 else '-#'}{abs(result.value)}"
+    return f"{result.value / 100:+.2f}"
+
+
+def _move_from_payload(board: chess.Board, payload: dict[str, Any]) -> chess.Move | None:
+    move_uci = str(payload.get("move_uci", "")).strip()
+    if move_uci:
+        try:
+            move = chess.Move.from_uci(move_uci)
+            if move in board.legal_moves:
+                return move
+        except ValueError:
+            return None
+    from_square = payload.get("from")
+    to_square = payload.get("to")
+    if not from_square or not to_square:
+        return None
+    promo_map = {"q": chess.QUEEN, "r": chess.ROOK, "b": chess.BISHOP, "n": chess.KNIGHT}
+    base_move = chess.Move.from_uci(f"{from_square}{to_square}")
+    promotion = promo_map.get(str(payload.get("promotion", "q")).lower(), chess.QUEEN)
+    for move in board.legal_moves:
+        if move.from_square == base_move.from_square and move.to_square == base_move.to_square:
+            if move.promotion is None or move.promotion == promotion:
+                return move
+    return None
+
+
+def _line_to_dict(board: chess.Board, result: EvalResult, index: int, classification: dict[str, Any] | None = None) -> dict[str, Any]:
+    move = result.pv[0] if result.pv else None
+    san = ""
+    uci = ""
+    if move and move in board.legal_moves:
+        san = board.san(move)
+        uci = move.uci()
+    return {
+        "rank": index,
+        "move_san": san,
+        "move_uci": uci,
+        "eval": _eval_to_dict(result),
+        "pv_san": pv_to_san(board, result.pv, 14),
+        "classification": classification,
+    }
+
+
+def _legal_moves_to_dict(board: chess.Board) -> list[dict[str, Any]]:
+    moves: list[dict[str, Any]] = []
+    for move in board.legal_moves:
+        moves.append(
+            {
+                "uci": move.uci(),
+                "from": chess.square_name(move.from_square),
+                "to": chess.square_name(move.to_square),
+                "san": board.san(move),
+                "promotion": chess.piece_symbol(move.promotion).lower() if move.promotion else "",
+                "capture": board.is_capture(move),
+                "check": board.gives_check(move),
+            }
+        )
+    return moves
+
+
+def _classify_line_candidate(board: chess.Board, lines: list[EvalResult], result: EvalResult) -> dict[str, Any] | None:
+    if not result.pv:
+        return None
+    # MultiPV scores are root-position scores for the PV. For candidate labels this is
+    # the same comparison Chess.com-style lines use: how much the candidate drops from
+    # the best root line.
+    current_eval = EvalResult(
+        cp=result.cp,
+        pv=result.pv[1:],
+        score_type=result.score_type,
+        value=result.value,
+    )
+    return classify_move(board, result.pv[0], lines, current_eval).to_dict()
+
+
+def _database_moves(fen: str, limit: int = 8) -> dict[str, Any]:
+    params = urlencode({"fen": fen, "moves": limit})
+    endpoints = [
+        ("masters", f"https://explorer.lichess.ovh/masters?{params}"),
+        ("lichess", f"https://explorer.lichess.ovh/lichess?{params}&speeds=rapid,classical,blitz"),
+    ]
+    last_error = ""
+    for source, url in endpoints:
+        try:
+            with urlopen(url, timeout=3.0) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+            moves = []
+            for move in payload.get("moves", [])[:limit]:
+                white = int(move.get("white", 0) or 0)
+                draws = int(move.get("draws", 0) or 0)
+                black = int(move.get("black", 0) or 0)
+                games = white + draws + black
+                moves.append(
+                    {
+                        "uci": move.get("uci", ""),
+                        "san": move.get("san", ""),
+                        "games": games,
+                        "white": white,
+                        "draws": draws,
+                        "black": black,
+                    }
+                )
+            if moves:
+                return {"source": source, "moves": moves, "error": ""}
+        except Exception as exc:
+            last_error = str(exc)
+    return {"source": "fallback", "moves": [], "error": last_error or "No database moves found."}
+
+
+def _build_analysis_payload(board: chess.Board, session: StockfishSession, settings: SearchSettings) -> dict[str, Any]:
+    lines = session.multipv(
+        board,
+        depth=settings.root_depth,
+        lines=settings.multipv,
+        movetime_ms=settings.think_time_ms,
+    )
+    classified_lines = [
+        _line_to_dict(board, line, index + 1, _classify_line_candidate(board, lines, line))
+        for index, line in enumerate(lines)
+    ]
+    best_eval = lines[0] if lines else session.analyse(board, settings.root_depth, movetime_ms=settings.think_time_ms)
+    return {
+        "fen": board.fen(),
+        "turn": "white" if board.turn == chess.WHITE else "black",
+        "legal_moves": _legal_moves_to_dict(board),
+        "legal_move_count": board.legal_moves.count(),
+        "is_check": board.is_check(),
+        "opening_name": get_opening_name(board.fen()),
+        "eval": _eval_to_dict(best_eval),
+        "engine_lines": classified_lines,
+        "database": _database_moves(board.fen()),
+    }
 
 
 def _scan_worker(job_id: str, engine_path: str, board: chess.Board, settings: SearchSettings) -> None:
@@ -328,8 +485,10 @@ def preview() -> Any:
             "fen": board.fen(),
             "turn": "white" if board.turn == chess.WHITE else "black",
             "san_history": payload.get("moves", "").split(),
+            "legal_moves": _legal_moves_to_dict(board),
             "legal_move_count": board.legal_moves.count(),
             "is_check": board.is_check(),
+            "opening_name": get_opening_name(board.fen()),
         }
     )
 
@@ -371,10 +530,75 @@ def apply_move() -> Any:
             "fen": board.fen(),
             "san": san,
             "turn": "white" if board.turn == chess.WHITE else "black",
+            "legal_moves": _legal_moves_to_dict(board),
             "legal_move_count": board.legal_moves.count(),
             "is_check": board.is_check(),
         }
     )
+
+
+@web_app.post("/api/analyze-position")
+def analyze_position() -> Any:
+    payload = request.get_json(force=True)
+    engine_path = str(payload.get("engine_path", "")).strip()
+    if not engine_path:
+        return jsonify({"error": "Stockfish path is required for live analysis."}), 400
+
+    try:
+        board = chess.Board(payload.get("fen", ""))
+    except ValueError:
+        return jsonify({"error": "Invalid FEN for analysis."}), 400
+
+    settings = _build_settings(payload.get("settings", {}))
+    move_payload = payload.get("move") or {}
+    played_review = None
+    played_san = ""
+    previous_fen = board.fen()
+
+    try:
+        with StockfishSession(engine_path, hash_mb=settings.hash_mb, threads=settings.threads) as session:
+            if move_payload:
+                move = _move_from_payload(board, move_payload)
+                if move is None:
+                    return jsonify({"error": "Illegal move for the current position."}), 400
+
+                previous_lines = session.multipv(
+                    board,
+                    depth=settings.root_depth,
+                    lines=settings.multipv,
+                    movetime_ms=settings.think_time_ms,
+                )
+                played_san = board.san(move)
+                matching_line = next((line for line in previous_lines if line.pv and line.pv[0] == move), None)
+                if matching_line is not None:
+                    current_eval = EvalResult(
+                        cp=matching_line.cp,
+                        pv=matching_line.pv[1:],
+                        score_type=matching_line.score_type,
+                        value=matching_line.value,
+                    )
+                else:
+                    after = board.copy(stack=False)
+                    after.push(move)
+                    current_eval = session.analyse(
+                        after,
+                        settings.shallow_depth,
+                        movetime_ms=max(500, min(settings.think_time_ms, 3000)),
+                    )
+
+                played_review = classify_move(board, move, previous_lines, current_eval).to_dict()
+                board.push(move)
+
+            analysis = _build_analysis_payload(board, session, settings)
+            analysis["previous_fen"] = previous_fen
+            analysis["played_san"] = played_san
+            analysis["played_classification"] = played_review
+            analysis["pgn_path"] = payload.get("pgn_path", "")
+            return jsonify(analysis)
+    except FileNotFoundError:
+        return jsonify({"error": "The Stockfish executable could not be opened."}), 400
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
 
 
 @web_app.post("/api/parse-pgn")

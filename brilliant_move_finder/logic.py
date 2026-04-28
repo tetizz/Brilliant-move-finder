@@ -8,6 +8,9 @@ import threading
 import chess
 import chess.engine
 
+from .classifications import classify_move, classify_scan_candidate
+from .engine import EvalResult
+
 
 PIECE_VALUES = {
     chess.PAWN: 1,
@@ -31,6 +34,7 @@ class SearchSettings:
     tree_max_ply: int = 32
     tree_node_cap: int = 3000
     multipv: int = 4
+    think_time_ms: int = 5000
 
 
 @dataclass(slots=True)
@@ -49,6 +53,7 @@ class BrilliantFlags:
 class BrilliantResult:
     move_san: str
     move_uci: str
+    fen: str
     path_san: list[str]
     eval_cp: float
     shallow_eval_cp: float
@@ -62,6 +67,10 @@ class BrilliantResult:
     sacrifice_value: int
     sacrifice_category: str
     compensation_type: str
+    confidence_bucket: str = "high"
+    classification_key: str = "brilliant"
+    classification_label: str = "Brilliant"
+    pgn_path: str = ""
     flags: BrilliantFlags = field(default_factory=BrilliantFlags)
 
 
@@ -112,6 +121,18 @@ def cp_from_score(score: chess.engine.PovScore, turn: chess.Color) -> float:
         return 100000.0 if mate > 0 else -100000.0
     cp = pov.score(mate_score=100000)
     return float(cp or 0)
+
+
+def eval_from_info(info: dict, board: chess.Board) -> EvalResult:
+    score = info["score"].white()
+    pv = list(info.get("pv") or [])
+    if score.is_mate():
+        mate = score.mate()
+        value = int(mate or 0)
+        cp = 100000 if value > 0 else -100000 if value < 0 else 0
+        return EvalResult(cp=cp, pv=pv, score_type="mate", value=value)
+    value = int(score.score(mate_score=100000) or 0)
+    return EvalResult(cp=value, pv=pv, score_type="centipawn", value=value)
 
 
 def material_for_color(board: chess.Board, color: chess.Color) -> int:
@@ -247,6 +268,38 @@ def best_line_children(
     return moves[: max(1, settings.frontier_width)]
 
 
+def broad_legal_children(
+    engine: chess.engine.SimpleEngine,
+    board: chess.Board,
+    settings: SearchSettings,
+    cancel_event: threading.Event,
+    cache: AnalysisCache,
+) -> list[chess.Move]:
+    assert_active(cancel_event)
+    legal = list(board.legal_moves)
+    if not legal:
+        return []
+    infos = analyse(
+        engine,
+        board,
+        settings.shallow_depth,
+        multipv=min(len(legal), max(settings.multipv, settings.frontier_width)),
+        cache=cache,
+    )
+    ordered: list[chess.Move] = []
+    seen: set[str] = set()
+    for entry in infos:
+        pv = entry.get("pv") or []
+        if pv and pv[0] in legal and pv[0].uci() not in seen:
+            ordered.append(pv[0])
+            seen.add(pv[0].uci())
+    for move in legal:
+        if move.uci() not in seen:
+            ordered.append(move)
+            seen.add(move.uci())
+    return ordered
+
+
 def san_path(board: chess.Board, moves: list[chess.Move]) -> list[str]:
     temp = board.copy(stack=False)
     out: list[str] = []
@@ -289,146 +342,121 @@ def find_brilliant_moves(
             engine,
             node,
             settings.shallow_depth,
-            multipv=max(settings.frontier_width, settings.multipv),
+            multipv=min(node.legal_moves.count(), max(settings.frontier_width, settings.multipv)),
             cache=cache,
         )
         if not root_infos:
             return
+        previous_lines = [eval_from_info(entry, node) for entry in root_infos]
+        root_cp = cp_from_score(root_infos[0]["score"], node.turn)
+        root_top = previous_lines[0].pv[0] if previous_lines and previous_lines[0].pv else None
 
-        shallow_best_entry = root_infos[0]
-        best_pv = shallow_best_entry.get("pv") or []
-        if best_pv:
-            candidate_move = best_pv[0]
-            if candidate_move in node.legal_moves:
-                candidate_after = node.copy(stack=False)
-                candidate_after.push(candidate_move)
-                quick_profile = classify_sacrifice(node, candidate_after, candidate_move)
-                if quick_profile.is_real_sacrifice and not quick_profile.is_free_capture and not quick_profile.is_defensive_only:
-                    root_confirm = analyse(engine, node, settings.root_depth, multipv=1, cache=cache)
-                    best_entry = root_confirm[0] if root_confirm else None
-                    best_confirm_pv = best_entry.get("pv") if best_entry else None
-                    if best_confirm_pv:
-                        best_move = best_confirm_pv[0]
-                    else:
-                        best_move = candidate_move
+        for candidate_move in broad_legal_children(engine, node, settings, cancel_event, cache):
+            assert_active(cancel_event)
+            candidate_after = node.copy(stack=False)
+            if candidate_move not in candidate_after.legal_moves:
+                continue
+            san = node.san(candidate_move)
+            candidate_after.push(candidate_move)
+            quick_profile = classify_sacrifice(node, candidate_after, candidate_move)
 
-                    after = node.copy(stack=False)
-                    profile_after = None
-                    if best_move in node.legal_moves:
-                        san = node.san(best_move)
-                        after.push(best_move)
-                        profile_after = classify_sacrifice(node, after, best_move)
-                    else:
-                        profile_after = quick_profile
+            matching_line = next((line for line in previous_lines if line.pv and line.pv[0] == candidate_move), None)
+            if matching_line is not None:
+                current_eval = EvalResult(
+                    cp=matching_line.cp,
+                    pv=matching_line.pv[1:],
+                    score_type=matching_line.score_type,
+                    value=matching_line.value,
+                )
+                shallow_cp = cp_from_score(root_infos[0]["score"], node.turn) if candidate_move == root_top else cp_from_score(root_infos[-1]["score"], node.turn)
+            else:
+                shallow_infos = analyse(engine, candidate_after, settings.shallow_depth, multipv=1, cache=cache)
+                current_eval = eval_from_info(shallow_infos[0], candidate_after) if shallow_infos else EvalResult(cp=0, pv=[])
+                shallow_cp = cp_from_score(shallow_infos[0]["score"], node.turn) if shallow_infos else -math.inf
 
-                    if profile_after.is_real_sacrifice and not profile_after.is_free_capture and not profile_after.is_defensive_only:
-                        shallow_infos = analyse(engine, after, settings.shallow_depth, multipv=1, cache=cache)
-                        deep_infos = analyse(engine, after, settings.root_depth, multipv=1, cache=cache)
-                        shallow_cp = cp_from_score(shallow_infos[0]["score"], node.turn) if shallow_infos else -math.inf
-                        deep_cp = cp_from_score(deep_infos[0]["score"], node.turn) if deep_infos else -math.inf
-                        root_cp = cp_from_score(best_entry["score"], node.turn) if best_entry else -math.inf
+            confidence_bucket, classification_key = classify_scan_candidate(
+                node,
+                candidate_move,
+                previous_lines,
+                current_eval,
+                quick_profile.is_real_sacrifice or quick_profile.is_hanging_offer,
+            )
+            if confidence_bucket:
+                deep_infos = analyse(engine, candidate_after, settings.root_depth, multipv=1, cache=cache)
+                deep_eval = eval_from_info(deep_infos[0], candidate_after) if deep_infos else current_eval
+                classification = classify_move(node, candidate_move, previous_lines, deep_eval)
 
-                        reply_infos = analyse(
-                            engine,
-                            after,
-                            settings.reply_depth,
-                            multipv=min(2, max(1, settings.frontier_width)),
-                            cache=cache,
-                        )
-                        best_acceptance_san = ""
-                        best_decline_san = ""
-                        best_defense_san = ""
-                        best_acceptance_cp = -math.inf
-                        best_decline_cp = -math.inf
-                        best_defense_cp = -math.inf
-                        continuation_san = ""
+                reply_infos = analyse(
+                    engine,
+                    candidate_after,
+                    settings.reply_depth,
+                    multipv=min(2, max(1, settings.frontier_width)),
+                    cache=cache,
+                )
+                best_defense_san = ""
+                best_defense_cp = -math.inf
+                continuation_san = ""
+                for reply_info in reply_infos:
+                    reply_pv = reply_info.get("pv") or []
+                    if not reply_pv:
+                        continue
+                    reply_board = candidate_after.copy(stack=False)
+                    reply_move = reply_pv[0]
+                    if reply_move not in reply_board.legal_moves:
+                        continue
+                    reply_san = reply_board.san(reply_move)
+                    reply_board.push(reply_move)
+                    cont_infos = analyse(engine, reply_board, settings.continuation_depth, multipv=1, cache=cache)
+                    if not cont_infos:
+                        continue
+                    cont_cp = cp_from_score(cont_infos[0]["score"], node.turn)
+                    cont_pv = cont_infos[0].get("pv") or []
+                    if cont_pv:
+                        temp = reply_board.copy(stack=False)
+                        if cont_pv[0] in temp.legal_moves:
+                            continuation_san = temp.san(cont_pv[0])
+                    if best_defense_san == "" or cont_cp < best_defense_cp:
+                        best_defense_san = reply_san
+                        best_defense_cp = cont_cp
 
-                        for reply_info in reply_infos:
-                            assert_active(cancel_event)
-                            reply_pv = reply_info.get("pv") or []
-                            if not reply_pv:
-                                continue
-                            reply_move = reply_pv[0]
-                            reply_board = after.copy(stack=False)
-                            if reply_move not in reply_board.legal_moves:
-                                continue
-                            reply_san = reply_board.san(reply_move)
-                            accepting = reply_move.to_square == best_move.to_square
-                            reply_board.push(reply_move)
-                            cont_infos = analyse(
-                                engine,
-                                reply_board,
-                                settings.continuation_depth,
-                                multipv=1,
-                                cache=cache,
-                            )
-                            if not cont_infos:
-                                continue
-                            cont_cp = cp_from_score(cont_infos[0]["score"], node.turn)
-                            cont_pv = cont_infos[0].get("pv") or []
-                            if cont_pv:
-                                temp = reply_board.copy(stack=False)
-                                if cont_pv[0] in temp.legal_moves:
-                                    continuation_san = temp.san(cont_pv[0])
+                flags = BrilliantFlags(
+                    is_best_move=root_top == candidate_move,
+                    is_real_sacrifice=quick_profile.is_real_sacrifice,
+                    is_free_capture=quick_profile.is_free_capture,
+                    is_defensive_only=quick_profile.is_defensive_only,
+                    looks_losing_initially=quick_profile.sacrifice_value >= 1 or shallow_cp <= root_cp - 20,
+                    holds_after_best_defense=best_defense_cp >= root_cp - 5 if best_defense_san else True,
+                    has_forcing_followup=bool(continuation_san),
+                    compensation_type=infer_compensation_type(quick_profile, root_cp, best_defense_cp, continuation_san),
+                )
+                result = BrilliantResult(
+                    move_san=san,
+                    move_uci=candidate_move.uci(),
+                    fen=node.fen(),
+                    path_san=san_path(board, path),
+                    eval_cp=float(deep_eval.cp),
+                    shallow_eval_cp=float(shallow_cp),
+                    best_defense_san=best_defense_san,
+                    best_defense_eval_cp=best_defense_cp,
+                    best_acceptance_san="",
+                    best_acceptance_eval_cp=0.0,
+                    best_decline_san="",
+                    best_decline_eval_cp=0.0,
+                    continuation_san=continuation_san,
+                    sacrifice_value=quick_profile.sacrifice_value,
+                    sacrifice_category=quick_profile.category,
+                    compensation_type=flags.compensation_type,
+                    confidence_bucket=confidence_bucket,
+                    classification_key=classification.key,
+                    classification_label=classification.label,
+                    pgn_path=" ".join(san_path(board, path) + [san]),
+                    flags=flags,
+                )
+                results.append(result)
+                if on_result:
+                    on_result(result)
 
-                            if best_defense_san == "" or cont_cp < best_defense_cp:
-                                best_defense_san = reply_san
-                                best_defense_cp = cont_cp
-                            if accepting and (best_acceptance_san == "" or cont_cp < best_acceptance_cp):
-                                best_acceptance_san = reply_san
-                                best_acceptance_cp = cont_cp
-                            if not accepting and (best_decline_san == "" or cont_cp < best_decline_cp):
-                                best_decline_san = reply_san
-                                best_decline_cp = cont_cp
-
-                        flags = BrilliantFlags(
-                            is_best_move=True,
-                            is_real_sacrifice=profile_after.is_real_sacrifice,
-                            is_free_capture=profile_after.is_free_capture,
-                            is_defensive_only=profile_after.is_defensive_only,
-                            looks_losing_initially=(
-                                profile_after.sacrifice_value >= 1
-                                or shallow_cp <= root_cp - 20
-                                or deep_cp - shallow_cp >= 28
-                            ),
-                            holds_after_best_defense=best_defense_cp >= root_cp - 5,
-                            has_forcing_followup=bool(continuation_san),
-                            compensation_type=infer_compensation_type(profile_after, root_cp, best_defense_cp, continuation_san),
-                        )
-                        is_brilliant = (
-                            flags.is_best_move
-                            and flags.is_real_sacrifice
-                            and not flags.is_free_capture
-                            and not flags.is_defensive_only
-                            and flags.looks_losing_initially
-                            and flags.holds_after_best_defense
-                            and flags.has_forcing_followup
-                            and flags.compensation_type != "none"
-                        )
-                        if is_brilliant:
-                            result = BrilliantResult(
-                                move_san=san,
-                                move_uci=best_move.uci(),
-                                path_san=san_path(board, path),
-                                eval_cp=deep_cp,
-                                shallow_eval_cp=shallow_cp,
-                                best_defense_san=best_defense_san,
-                                best_defense_eval_cp=best_defense_cp,
-                                best_acceptance_san=best_acceptance_san,
-                                best_acceptance_eval_cp=best_acceptance_cp,
-                                best_decline_san=best_decline_san,
-                                best_decline_eval_cp=best_decline_cp,
-                                continuation_san=continuation_san,
-                                sacrifice_value=profile_after.sacrifice_value,
-                                sacrifice_category=profile_after.category,
-                                compensation_type=flags.compensation_type,
-                                flags=flags,
-                            )
-                            results.append(result)
-                            if on_result:
-                                on_result(result)
-
-        for child_move, _score in best_line_children(engine, node, settings, cancel_event, cache):
+        for child_move in broad_legal_children(engine, node, settings, cancel_event, cache):
             assert_active(cancel_event)
             next_board = node.copy(stack=False)
             if child_move not in next_board.legal_moves:

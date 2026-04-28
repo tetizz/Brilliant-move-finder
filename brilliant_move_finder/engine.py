@@ -15,6 +15,8 @@ MATE_CP = 100_000
 class EvalResult:
     cp: int
     pv: list[chess.Move]
+    score_type: str = "centipawn"
+    value: int = 0
 
 
 def score_to_cp(score: chess.engine.PovScore, turn: chess.Color) -> int:
@@ -26,6 +28,19 @@ def score_to_cp(score: chess.engine.PovScore, turn: chess.Color) -> int:
         return MATE_CP - abs(mate) if mate > 0 else -MATE_CP + abs(mate)
     value = pov.score(mate_score=MATE_CP)
     return 0 if value is None else int(value)
+
+
+def score_to_eval(score: chess.engine.PovScore) -> tuple[int, str, int]:
+    pov = score.pov(chess.WHITE)
+    if pov.is_mate():
+        mate = pov.mate()
+        if mate is None:
+            return 0, "mate", 0
+        cp = MATE_CP - abs(mate) if mate > 0 else -MATE_CP + abs(mate)
+        return cp, "mate", int(mate)
+    value = pov.score(mate_score=MATE_CP)
+    cp = 0 if value is None else int(value)
+    return cp, "centipawn", cp
 
 
 class StockfishSession:
@@ -66,24 +81,33 @@ class StockfishSession:
         assert self._engine is not None
         return self._engine
 
-    def analyse(self, board: chess.Board, depth: int) -> EvalResult:
-        info = self.engine.analyse(board, chess.engine.Limit(depth=max(1, int(depth))))
-        score = score_to_cp(info["score"], board.turn)
+    def analyse(self, board: chess.Board, depth: int, movetime_ms: int | None = None) -> EvalResult:
+        limit = chess.engine.Limit(depth=max(1, int(depth)))
+        if movetime_ms and movetime_ms > 0:
+            limit = chess.engine.Limit(depth=max(1, int(depth)), time=max(0.05, movetime_ms / 1000))
+        info = self.engine.analyse(board, limit)
+        score, score_type, value = score_to_eval(info["score"])
         pv = list(info.get("pv", []))
-        return EvalResult(cp=score, pv=pv)
+        return EvalResult(cp=score, pv=pv, score_type=score_type, value=value)
 
-    def multipv(self, board: chess.Board, depth: int, lines: int) -> list[EvalResult]:
+    def multipv(self, board: chess.Board, depth: int, lines: int, movetime_ms: int | None = None) -> list[EvalResult]:
+        limit = chess.engine.Limit(depth=max(1, int(depth)))
+        if movetime_ms and movetime_ms > 0:
+            limit = chess.engine.Limit(depth=max(1, int(depth)), time=max(0.05, movetime_ms / 1000))
         infos = self.engine.analyse(
             board,
-            chess.engine.Limit(depth=max(1, int(depth))),
+            limit,
             multipv=max(1, int(lines)),
         )
         out: list[EvalResult] = []
         for info in infos:
+            score, score_type, value = score_to_eval(info["score"])
             out.append(
                 EvalResult(
-                    cp=score_to_cp(info["score"], board.turn),
+                    cp=score,
                     pv=list(info.get("pv", [])),
+                    score_type=score_type,
+                    value=value,
                 )
             )
         return out
