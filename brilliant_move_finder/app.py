@@ -10,9 +10,9 @@ import ctypes
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
-from urllib.error import URLError
+from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
-from urllib.request import urlopen
+from urllib.request import Request, urlopen
 
 import chess
 import chess.pgn
@@ -368,8 +368,23 @@ def _classify_line_candidate(board: chess.Board, lines: list[EvalResult], result
     return classify_move(board, result.pv[0], lines, current_eval).to_dict()
 
 
-def _database_moves(fen: str, limit: int = 8) -> dict[str, Any]:
-    params = urlencode({"fen": fen, "moves": limit})
+def _clean_lichess_token(value: str) -> str:
+    token = str(value or "").strip()
+    if token.lower() in {"demo-token", "your-token", "lichess-token", "paste-token-here"}:
+        return ""
+    return token
+
+
+def _database_moves(fen: str, limit: int = 8, lichess_token: str = "") -> dict[str, Any]:
+    token = _clean_lichess_token(lichess_token)
+    if not token:
+        return {
+            "source": "disabled",
+            "moves": [],
+            "error": "Add a real Lichess API token to show live explorer database moves.",
+        }
+
+    params = urlencode({"variant": "standard", "fen": fen, "moves": limit})
     endpoints = [
         ("masters", f"https://explorer.lichess.ovh/masters?{params}"),
         ("lichess", f"https://explorer.lichess.ovh/lichess?{params}&speeds=rapid,classical,blitz"),
@@ -377,7 +392,15 @@ def _database_moves(fen: str, limit: int = 8) -> dict[str, Any]:
     last_error = ""
     for source, url in endpoints:
         try:
-            with urlopen(url, timeout=3.0) as response:
+            request = Request(
+                url,
+                headers={
+                    "Accept": "application/json",
+                    "Authorization": f"Bearer {token}",
+                    "User-Agent": "BrilliantMoveFinder/1.0 (local chess analysis)",
+                },
+            )
+            with urlopen(request, timeout=5.0) as response:
                 payload = json.loads(response.read().decode("utf-8"))
             moves = []
             for move in payload.get("moves", [])[:limit]:
@@ -397,12 +420,14 @@ def _database_moves(fen: str, limit: int = 8) -> dict[str, Any]:
                 )
             if moves:
                 return {"source": source, "moves": moves, "error": ""}
+        except HTTPError as exc:
+            last_error = "Lichess explorer rejected the token." if exc.code in {401, 403} else f"Lichess explorer HTTP {exc.code}."
         except Exception as exc:
             last_error = str(exc)
     return {"source": "fallback", "moves": [], "error": last_error or "No database moves found."}
 
 
-def _build_analysis_payload(board: chess.Board, session: StockfishSession, settings: SearchSettings) -> dict[str, Any]:
+def _build_analysis_payload(board: chess.Board, session: StockfishSession, settings: SearchSettings, lichess_token: str = "") -> dict[str, Any]:
     lines = session.multipv(
         board,
         depth=settings.root_depth,
@@ -423,7 +448,7 @@ def _build_analysis_payload(board: chess.Board, session: StockfishSession, setti
         "opening_name": get_opening_name(board.fen()),
         "eval": _eval_to_dict(best_eval),
         "engine_lines": classified_lines,
-        "database": _database_moves(board.fen()),
+        "database": _database_moves(board.fen(), lichess_token=lichess_token),
     }
 
 
@@ -458,6 +483,7 @@ def index() -> str:
     config = _load_config()
     defaults = {
         "engine_path": config.get("engine_path", _default_engine_path()),
+        "lichess_token": _clean_lichess_token(str(config.get("lichess_token", ""))),
         "fen": config.get("fen", ""),
         "moves": config.get("moves", ""),
         "preset": config.get("preset", "Balanced"),
@@ -550,6 +576,8 @@ def analyze_position() -> Any:
         return jsonify({"error": "Invalid FEN for analysis."}), 400
 
     settings = _build_settings(payload.get("settings", {}))
+    config = _load_config()
+    lichess_token = _clean_lichess_token(str(payload.get("lichess_token", config.get("lichess_token", ""))))
     move_payload = payload.get("move") or {}
     played_review = None
     played_san = ""
@@ -589,7 +617,7 @@ def analyze_position() -> Any:
                 played_review = classify_move(board, move, previous_lines, current_eval).to_dict()
                 board.push(move)
 
-            analysis = _build_analysis_payload(board, session, settings)
+            analysis = _build_analysis_payload(board, session, settings, lichess_token=lichess_token)
             analysis["previous_fen"] = previous_fen
             analysis["played_san"] = played_san
             analysis["played_classification"] = played_review
@@ -634,10 +662,12 @@ def start_scan() -> Any:
 
     board = board_from_input(payload.get("fen", ""), payload.get("moves", ""))
     settings = _build_settings(payload.get("settings", {}))
+    lichess_token = _clean_lichess_token(str(payload.get("lichess_token", "")))
 
     _save_config(
         {
             "engine_path": engine_path,
+            "lichess_token": lichess_token,
             "fen": payload.get("fen", ""),
             "moves": payload.get("moves", ""),
             "preset": payload.get("preset", "Balanced"),

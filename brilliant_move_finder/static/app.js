@@ -38,6 +38,7 @@ const state = {
 
 const el = {
   enginePath: document.getElementById("enginePath"),
+  lichessToken: document.getElementById("lichessToken"),
   fenInput: document.getElementById("fenInput"),
   movesInput: document.getElementById("movesInput"),
   presetSelect: document.getElementById("presetSelect"),
@@ -95,6 +96,7 @@ function init() {
 
 function hydrateDefaults() {
   el.enginePath.value = defaults.engine_path || "";
+  if (el.lichessToken) el.lichessToken.value = defaults.lichess_token || "";
   el.fenInput.value = defaults.fen || "";
   el.movesInput.value = defaults.moves || "";
 
@@ -508,6 +510,7 @@ async function tryBoardMove(fromSquare, toSquare) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       engine_path: el.enginePath.value.trim(),
+      lichess_token: el.lichessToken?.value.trim() || "",
       fen: state.currentFen,
       settings: collectSettings(),
       move: {
@@ -755,6 +758,7 @@ async function startScan() {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       engine_path: el.enginePath.value.trim(),
+      lichess_token: el.lichessToken?.value.trim() || "",
       fen: el.fenInput.value.trim(),
       moves: el.movesInput.value.trim(),
       preset: el.presetSelect.value,
@@ -929,6 +933,7 @@ async function refreshAnalysis() {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       engine_path: el.enginePath.value.trim(),
+      lichess_token: el.lichessToken?.value.trim() || "",
       fen: state.currentFen,
       settings: collectSettings(),
       pgn_path: currentPgnPath(),
