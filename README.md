@@ -30,6 +30,18 @@ A move is only marked brilliant if all of these hold:
 
 ## Quick start
 
+### Packaged app
+
+Double-click the root-level executable:
+
+```powershell
+.\Brilliant Move Finder.exe
+```
+
+Keep the `stockfish\` folder beside the EXE so the app can find the local engine automatically.
+
+### Source mode
+
 1. Install Python 3.13+
 2. Install dependencies:
 
@@ -51,6 +63,16 @@ python main.py
 ```
 
 The app starts a local server on `http://127.0.0.1:8765` and opens it inside a desktop GUI window.
+
+## Packaging
+
+To recreate the clean root-level desktop app:
+
+```powershell
+python package.py
+```
+
+The reproducible output is `Brilliant Move Finder.exe` directly in this folder. Old `build\`, `dist\`, and `release\` folders are removed during packaging so there is only one obvious launcher.
 
 ## Input options
 
