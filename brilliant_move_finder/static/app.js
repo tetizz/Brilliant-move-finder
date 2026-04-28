@@ -249,6 +249,7 @@ function renderCoords() {
 function renderBoard(fen) {
   const position = parseFenState(fen).squares;
   el.board.innerHTML = "";
+  syncSetupModeButton();
   const ordered = orientedBoard(position);
   ordered.forEach(({ piece, squareName }, index) => {
     const square = document.createElement("div");
@@ -274,12 +275,11 @@ function renderBoard(fen) {
       square.classList.remove("drag-over");
       const palettePiece = event.dataTransfer.getData("application/x-piece");
       const fromSquare = event.dataTransfer.getData("text/plain") || state.draggingFrom;
-      if (state.setupMode) {
-        if (palettePiece) {
-          applyEditorPiece(squareName, palettePiece === "erase" ? "" : palettePiece);
-        } else if (fromSquare) {
-          moveEditorPiece(fromSquare, squareName);
-        }
+      if (palettePiece) {
+        enableSetupModeForEditing(false);
+        applyEditorPiece(squareName, palettePiece === "erase" ? "" : palettePiece);
+      } else if (state.setupMode && fromSquare) {
+        moveEditorPiece(fromSquare, squareName);
       } else if (fromSquare) {
         await tryBoardMove(fromSquare, squareName);
       }
@@ -602,13 +602,33 @@ function flipBoard() {
 }
 
 function toggleSetupMode() {
-  state.setupMode = !state.setupMode;
+  setSetupMode(!state.setupMode);
+}
+
+function setSetupMode(enabled, announce = true) {
+  state.setupMode = enabled;
   state.selectedSquare = null;
-  el.setupModeBtn.textContent = `Setup Mode: ${state.setupMode ? "On" : "Off"}`;
-  el.setupModeBtn.classList.toggle("active", state.setupMode);
+  syncSetupModeButton();
   renderBoard(state.currentFen);
   renderPiecePalette();
-  setStatus(state.setupMode ? "Setup mode enabled. Drag pieces from the palette or move pieces freely." : "Setup mode disabled. Legal move mode restored.");
+  if (announce) {
+    setStatus(state.setupMode ? "Setup mode enabled. Drag pieces from the palette or move pieces freely." : "Setup mode disabled. Legal move mode restored.");
+  }
+}
+
+function enableSetupModeForEditing(announce = true) {
+  if (!state.setupMode) {
+    state.setupMode = true;
+    state.selectedSquare = null;
+    syncSetupModeButton();
+    if (announce) setStatus("Setup mode enabled. Click a square to place the selected piece.");
+  }
+}
+
+function syncSetupModeButton() {
+  el.setupModeBtn.textContent = `Setup Mode: ${state.setupMode ? "On" : "Off"}`;
+  el.setupModeBtn.classList.toggle("active", state.setupMode);
+  el.board.classList.toggle("setup-mode", state.setupMode);
 }
 
 function toggleEditorTurn() {
@@ -634,11 +654,22 @@ function renderPiecePalette() {
     btn.draggable = true;
     btn.addEventListener("click", () => {
       state.editorPiece = state.editorPiece === piece ? null : piece;
+      if (state.editorPiece !== null) {
+        enableSetupModeForEditing(false);
+        setStatus(piece === "erase" ? "Erase selected. Click a square to remove a piece." : "Piece selected. Click a square to place it.");
+      } else {
+        setStatus("Palette selection cleared.");
+      }
       renderPiecePalette();
+      renderBoard(state.currentFen);
     });
     btn.addEventListener("dragstart", (event) => {
       event.dataTransfer.setData("application/x-piece", piece);
       state.editorPiece = piece;
+      enableSetupModeForEditing(false);
+      setStatus(piece === "erase" ? "Drag erase onto a square to clear it." : "Drag the selected piece onto a square.");
+    });
+    btn.addEventListener("dragend", () => {
       renderPiecePalette();
     });
     if (piece === "erase") {
@@ -658,17 +689,22 @@ function moveEditorPiece(fromSquare, toSquare) {
   const fenState = parseFenState(state.currentFen);
   const fromIndex = squareIndex(fromSquare);
   const toIndex = squareIndex(toSquare);
+  if (!fenState.squares[fromIndex]) return;
   fenState.squares[toIndex] = fenState.squares[fromIndex];
   fenState.squares[fromIndex] = "";
+  state.selectedSquare = null;
   state.lastMoveSquares = [fromSquare, toSquare];
   writeEditorFen(fenState.squares);
+  setStatus(`Moved piece from ${fromSquare} to ${toSquare}.`);
 }
 
 function applyEditorPiece(squareName, piece) {
   const fenState = parseFenState(state.currentFen);
   fenState.squares[squareIndex(squareName)] = piece;
+  state.selectedSquare = null;
   state.lastMoveSquares = [squareName];
   writeEditorFen(fenState.squares);
+  setStatus(piece ? `Placed ${piece} on ${squareName}.` : `Cleared ${squareName}.`);
 }
 
 function writeEditorFen(squares) {
@@ -680,6 +716,7 @@ function writeEditorFen(squares) {
   renderBoard(state.currentFen);
   el.boardMeta.textContent = "Custom setup position";
   el.turnBadge.textContent = state.editorTurn === "w" ? "White to move" : "Black to move";
+  syncTurnButton();
 }
 
 function squareIndex(squareName) {
