@@ -15,6 +15,20 @@ const PIECE_ASSETS = {
   k: "/static/pieces/cburnett/bK.svg",
 };
 
+const CLASSIFICATION_ASSETS = {
+  best: "/static/move-classifications/best.png",
+  blunder: "/static/move-classifications/blunder.png",
+  book: "/static/move-classifications/book.png",
+  brilliant: "/static/move-classifications/brilliant.png",
+  excellent: "/static/move-classifications/excellent.png",
+  good: "/static/move-classifications/good.png",
+  great: "/static/move-classifications/great.png",
+  inaccuracy: "/static/move-classifications/inaccuracy.png",
+  miss: "/static/move-classifications/miss.png",
+  mistake: "/static/move-classifications/mistake.png",
+  forced: "/static/move-classifications/best.png",
+};
+
 const files = ["a", "b", "c", "d", "e", "f", "g", "h"];
 const ranks = ["8", "7", "6", "5", "4", "3", "2", "1"];
 
@@ -332,10 +346,11 @@ function applyClassificationOverlay(square, squareName) {
   square.classList.add("classified-square");
   square.style.setProperty("--classification-color", overlay.color || "#8bc34a");
   if (squareName === overlay.to) {
-    const badge = document.createElement("span");
+    const badge = document.createElement("img");
     badge.className = "classification-badge";
+    badge.src = classificationIconUrl(overlay.key);
+    badge.alt = overlay.label || "Move classification";
     badge.style.setProperty("--classification-color", overlay.color || "#8bc34a");
-    badge.textContent = overlay.symbol || overlay.label?.slice(0, 1) || "!";
     square.appendChild(badge);
   }
 }
@@ -533,6 +548,7 @@ async function tryBoardMove(fromSquare, toSquare) {
   state.classificationOverlay = classification ? {
     from: fromSquare,
     to: toSquare,
+    key: classification.key,
     label: classification.label,
     symbol: classification.symbol,
     color: classification.color,
@@ -557,6 +573,24 @@ function canSelectPiece(piece) {
 
 function currentPgnPath() {
   return el.movesInput.value.trim();
+}
+
+function classificationIconUrl(key) {
+  return CLASSIFICATION_ASSETS[String(key || "").toLowerCase()] || CLASSIFICATION_ASSETS.best;
+}
+
+function classificationBadgeHtml(classification, options = {}) {
+  const cls = classification || {};
+  const key = String(cls.key || options.key || "").toLowerCase();
+  const label = cls.label || options.label || (key ? capitalize(key) : "Move");
+  const color = cls.color || options.color || "#8bc34a";
+  const sizeClass = options.tiny ? " tiny" : "";
+  return `
+    <span class="classification-chip${sizeClass}" style="--classification-color:${escapeHtml(color)}">
+      <img class="classification-icon" src="${escapeHtml(classificationIconUrl(key))}" alt="${escapeHtml(label)}">
+      <span>${escapeHtml(label)}</span>
+    </span>
+  `;
 }
 
 function pieceAtSquare(fen, squareName) {
@@ -847,7 +881,7 @@ function renderResultBucket(container, results, emptyText) {
     <article class="result-card ${index === state.activeIndex ? "active" : ""}" data-index="${index}">
       <div class="result-title">${escapeHtml(result.move_san)}</div>
       <div class="result-meta">
-        <span class="pill ${escapeHtml(result.classification_key || "brilliant")}">${escapeHtml(result.classification_label || "Brilliant")}</span>
+        ${classificationBadgeHtml({ key: result.classification_key || "brilliant", label: result.classification_label || "Brilliant" }, { tiny: true })}
         <span class="pill">${escapeHtml(result.compensation_type)}</span>
         <span class="pill">${escapeHtml(result.sacrifice_category)}</span>
         <span class="pill">Sac ${escapeHtml(String(result.sacrifice_value))}</span>
@@ -960,7 +994,7 @@ function renderAnalysis(payload) {
   el.pgnPathView.textContent = currentPgnPath() || payload.pgn_path || "No played line yet.";
   if (payload.played_classification) {
     const cls = payload.played_classification;
-    el.moveReview.innerHTML = `<span class="classification-chip" style="--classification-color:${escapeHtml(cls.color)}">${escapeHtml(cls.symbol)} ${escapeHtml(cls.label)}</span> ${escapeHtml(payload.played_san || "Move")}: ${escapeHtml(cls.reason)}`;
+    el.moveReview.innerHTML = `${classificationBadgeHtml(cls)} <strong>${escapeHtml(payload.played_san || "Move")}</strong>: ${escapeHtml(cls.reason)}`;
   }
   renderEngineLines(payload.engine_lines || []);
   renderDatabaseMoves(payload.database || {});
@@ -978,7 +1012,7 @@ function renderEngineLines(lines) {
     return `
       <div class="analysis-line">
         <span class="eval-box">${escapeHtml(line.eval?.display || "")}</span>
-        <span class="classification-chip tiny" style="--classification-color:${escapeHtml(cls.color || "#8bc34a")}">${escapeHtml(cls.symbol || "")} ${escapeHtml(cls.label || "")}</span>
+        ${classificationBadgeHtml(cls, { tiny: true })}
         <strong>${escapeHtml(line.move_san || "")}</strong>
         <span>${escapeHtml(line.pv_san || "")}</span>
       </div>
