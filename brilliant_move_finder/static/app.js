@@ -170,7 +170,7 @@ function wireEvents() {
   el.previewBtn.addEventListener("click", previewPosition);
   el.scanBtn.addEventListener("click", startScan);
   el.cancelBtn.addEventListener("click", cancelScan);
-  el.startPosBtn.addEventListener("click", setStartPosition);
+  el.startPosBtn.addEventListener("click", () => { void setStartPosition(); });
   el.clearBoardBtn.addEventListener("click", clearBoard);
   el.flipBoardBtn.addEventListener("click", flipBoard);
   el.setupModeBtn.addEventListener("click", toggleSetupMode);
@@ -540,6 +540,7 @@ async function tryBoardMove(fromSquare, toSquare) {
   state.lastMoveSquares = [fromSquare, toSquare];
   el.fenInput.value = payload.fen;
   el.movesInput.value = `${el.movesInput.value.trim()} ${payload.played_san || legal.san}`.trim();
+  payload.pgn_path = currentPgnPath();
   renderBoard(payload.fen);
   el.boardMeta.textContent = `${payload.legal_move_count} legal moves${payload.is_check ? " | check" : ""}`;
   el.turnBadge.textContent = payload.turn === "white" ? "White to move" : "Black to move";
@@ -565,7 +566,7 @@ function pieceAtSquare(fen, squareName) {
   return squares[rankIndex * 8 + fileIndex];
 }
 
-function setStartPosition() {
+async function setStartPosition() {
   state.selectedSquare = null;
   state.editorTurn = "w";
   state.currentFen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
@@ -575,10 +576,11 @@ function setStartPosition() {
   el.fenInput.value = state.currentFen;
   el.movesInput.value = "";
   renderBoard(state.currentFen);
-  el.boardMeta.textContent = "20 legal moves";
+  el.boardMeta.textContent = "Loading legal moves...";
   el.turnBadge.textContent = "White to move";
   syncTurnButton();
   setStatus("Reset to the starting position.");
+  await previewPosition();
 }
 
 function clearBoard() {
@@ -955,7 +957,7 @@ function renderAnalysis(payload) {
   el.analysisEval.textContent = payload.eval?.display || "0.00";
   el.boardMeta.textContent = `${payload.legal_move_count} legal moves${payload.is_check ? " | check" : ""}${payload.opening_name ? ` | ${payload.opening_name}` : ""}`;
   el.turnBadge.textContent = payload.turn === "white" ? "White to move" : "Black to move";
-  el.pgnPathView.textContent = payload.pgn_path || currentPgnPath() || "No played line yet.";
+  el.pgnPathView.textContent = currentPgnPath() || payload.pgn_path || "No played line yet.";
   if (payload.played_classification) {
     const cls = payload.played_classification;
     el.moveReview.innerHTML = `<span class="classification-chip" style="--classification-color:${escapeHtml(cls.color)}">${escapeHtml(cls.symbol)} ${escapeHtml(cls.label)}</span> ${escapeHtml(payload.played_san || "Move")}: ${escapeHtml(cls.reason)}`;
