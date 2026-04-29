@@ -533,28 +533,65 @@ async function tryBoardMove(fromSquare, toSquare) {
     setStatus("That destination is not legal in the current position.");
     return;
   }
-  setStatus("Analyzing move...");
+  const previousFen = state.currentFen;
+  const movePayload = {
+    from: fromSquare,
+    to: toSquare,
+    promotion: "q",
+  };
+
+  setStatus("Playing move...");
+  const moveResponse = await fetch("/api/move", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      fen: previousFen,
+      ...movePayload,
+    }),
+  });
+  const moveResult = await moveResponse.json();
+  if (!moveResponse.ok) {
+    setStatus(moveResult.error || "Illegal move.");
+    return;
+  }
+
+  state.currentFen = moveResult.fen;
+  state.editorTurn = moveResult.turn === "white" ? "w" : "b";
+  state.legalMoves = moveResult.legal_moves || [];
+  state.classificationOverlay = null;
+  state.lastMoveSquares = [fromSquare, toSquare];
+  el.fenInput.value = moveResult.fen;
+  el.movesInput.value = `${el.movesInput.value.trim()} ${moveResult.san || legal.san}`.trim();
+  renderBoard(moveResult.fen);
+  el.boardMeta.textContent = `${moveResult.legal_move_count} legal moves${moveResult.is_check ? " | check" : ""}`;
+  el.turnBadge.textContent = moveResult.turn === "white" ? "White to move" : "Black to move";
+  syncTurnButton();
+  setStatus(`Played ${moveResult.san || legal.san}. Analyzing...`);
+
+  const requestId = ++state.analysisRequestId;
   const response = await fetch("/api/analyze-position", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       engine_path: el.enginePath.value.trim(),
       lichess_token: el.lichessToken?.value.trim() || "",
-      fen: state.currentFen,
+      fen: previousFen,
       settings: collectSettings(),
-      move: {
-        from: fromSquare,
-        to: toSquare,
-        promotion: "q",
-      },
+      move: movePayload,
       pgn_path: currentPgnPath(),
     }),
   });
   const payload = await response.json();
+  if (requestId !== state.analysisRequestId) return;
   if (!response.ok) {
-    setStatus(payload.error || "Illegal move.");
+    setStatus(payload.error || "Live analysis failed after the move.");
+    el.analysisEval.textContent = "No live eval";
+    el.engineLines.className = "analysis-list empty-state";
+    el.engineLines.textContent = payload.error || "Live analysis failed.";
+    await refreshDatabaseMoves(requestId);
     return;
   }
+
   state.currentFen = payload.fen;
   state.editorTurn = payload.turn === "white" ? "w" : "b";
   state.legalMoves = payload.legal_moves || [];
@@ -569,14 +606,13 @@ async function tryBoardMove(fromSquare, toSquare) {
   } : null;
   state.lastMoveSquares = [fromSquare, toSquare];
   el.fenInput.value = payload.fen;
-  el.movesInput.value = `${el.movesInput.value.trim()} ${payload.played_san || legal.san}`.trim();
   payload.pgn_path = currentPgnPath();
   renderBoard(payload.fen);
   el.boardMeta.textContent = `${payload.legal_move_count} legal moves${payload.is_check ? " | check" : ""}`;
   el.turnBadge.textContent = payload.turn === "white" ? "White to move" : "Black to move";
   syncTurnButton();
   renderAnalysis(payload);
-  setStatus(`Played ${payload.played_san || legal.san}`);
+  setStatus(`Played ${payload.played_san || moveResult.san || legal.san}`);
 }
 
 function canSelectPiece(piece) {
@@ -1019,6 +1055,10 @@ async function refreshAnalysis() {
   if (requestId !== state.analysisRequestId) return;
   if (!response.ok) {
     setStatus(payload.error || "Live analysis failed.");
+    el.analysisEval.textContent = "No live eval";
+    el.engineLines.className = "analysis-list empty-state";
+    el.engineLines.textContent = payload.error || "Live analysis failed.";
+    renderBoard(state.currentFen);
     await refreshDatabaseMoves(requestId);
     return;
   }

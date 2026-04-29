@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
@@ -9,6 +10,19 @@ import chess.engine
 
 
 MATE_CP = 100_000
+
+
+def hidden_engine_popen_args() -> dict:
+    """Keep Stockfish child processes from opening a visible console window."""
+    if not hasattr(subprocess, "STARTUPINFO"):
+        return {}
+    startupinfo = subprocess.STARTUPINFO()
+    startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    startupinfo.wShowWindow = subprocess.SW_HIDE
+    return {
+        "creationflags": subprocess.CREATE_NO_WINDOW,
+        "startupinfo": startupinfo,
+    }
 
 
 @dataclass(slots=True)
@@ -60,7 +74,10 @@ class StockfishSession:
     def open(self) -> None:
         if self._engine is not None:
             return
-        self._engine = chess.engine.SimpleEngine.popen_uci(str(self.engine_path))
+        self._engine = chess.engine.SimpleEngine.popen_uci(
+            str(self.engine_path),
+            **hidden_engine_popen_args(),
+        )
         self._engine.configure(
             {
                 "Hash": self.hash_mb,
@@ -71,8 +88,10 @@ class StockfishSession:
     def close(self) -> None:
         if self._engine is None:
             return
-        self._engine.quit()
-        self._engine = None
+        try:
+            self._engine.quit()
+        finally:
+            self._engine = None
 
     @property
     def engine(self) -> chess.engine.SimpleEngine:

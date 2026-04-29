@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import atexit
 import io
 import json
 import os
@@ -40,6 +41,9 @@ RESOURCE_DIR = Path(getattr(sys, "_MEIPASS", SOURCE_DIR))
 CONFIG_PATH = RUNTIME_DIR / "config.json"
 EXPORT_DIR = RUNTIME_DIR / "exports"
 DATABASE_CACHE: dict[str, dict[str, Any]] = {}
+LIVE_ENGINE_LOCK = threading.Lock()
+LIVE_ENGINE_SESSION: StockfishSession | None = None
+LIVE_ENGINE_KEY = ""
 
 DEFAULT_ENGINE_HINTS = [
     RUNTIME_DIR / "stockfish.exe",
@@ -148,6 +152,52 @@ def _default_engine_path() -> str:
         if candidate_str and candidate_str not in {".", ""} and candidate.exists():
             return str(candidate.resolve())
     return ""
+
+
+def _resolve_engine_path(engine_path: str) -> str:
+    candidate = str(engine_path or "").strip() or _default_engine_path()
+    if not candidate:
+        return ""
+    path = Path(candidate)
+    if path.exists():
+        return str(path.resolve())
+    fallback = _default_engine_path()
+    return fallback or candidate
+
+
+def _engine_session_key(engine_path: str, settings: SearchSettings) -> str:
+    return json.dumps(
+        {
+            "path": str(Path(engine_path).resolve()),
+            "hash_mb": settings.hash_mb,
+            "threads": settings.threads,
+        },
+        sort_keys=True,
+    )
+
+
+def _close_live_engine() -> None:
+    global LIVE_ENGINE_SESSION, LIVE_ENGINE_KEY
+    if LIVE_ENGINE_SESSION is not None:
+        LIVE_ENGINE_SESSION.close()
+    LIVE_ENGINE_SESSION = None
+    LIVE_ENGINE_KEY = ""
+
+
+def _live_engine_for(engine_path: str, settings: SearchSettings) -> StockfishSession:
+    global LIVE_ENGINE_SESSION, LIVE_ENGINE_KEY
+    key = _engine_session_key(engine_path, settings)
+    if LIVE_ENGINE_SESSION is not None and LIVE_ENGINE_KEY == key:
+        return LIVE_ENGINE_SESSION
+    _close_live_engine()
+    session = StockfishSession(engine_path, hash_mb=settings.hash_mb, threads=settings.threads)
+    session.open()
+    LIVE_ENGINE_SESSION = session
+    LIVE_ENGINE_KEY = key
+    return session
+
+
+atexit.register(_close_live_engine)
 
 
 def _load_config() -> dict[str, Any]:
@@ -551,7 +601,13 @@ def database_moves() -> Any:
 @web_app.post("/api/move")
 def apply_move() -> Any:
     payload = request.get_json(force=True)
-    board = chess.Board(payload.get("fen", ""))
+    fen = str(payload.get("fen", "") or chess.STARTING_FEN)
+    if fen == "startpos":
+        fen = chess.STARTING_FEN
+    try:
+        board = chess.Board(fen)
+    except ValueError:
+        return jsonify({"error": "Invalid FEN for move application."}), 400
     from_square = payload.get("from")
     to_square = payload.get("to")
     promotion = payload.get("promotion", "q")
@@ -595,12 +651,15 @@ def apply_move() -> Any:
 @web_app.post("/api/analyze-position")
 def analyze_position() -> Any:
     payload = request.get_json(force=True)
-    engine_path = str(payload.get("engine_path", "")).strip()
+    engine_path = _resolve_engine_path(str(payload.get("engine_path", "")).strip())
     if not engine_path:
         return jsonify({"error": "Stockfish path is required for live analysis."}), 400
 
+    fen = str(payload.get("fen", "") or chess.STARTING_FEN)
+    if fen == "startpos":
+        fen = chess.STARTING_FEN
     try:
-        board = chess.Board(payload.get("fen", ""))
+        board = chess.Board(fen)
     except ValueError:
         return jsonify({"error": "Invalid FEN for analysis."}), 400
 
@@ -613,7 +672,8 @@ def analyze_position() -> Any:
     previous_fen = board.fen()
 
     try:
-        with StockfishSession(engine_path, hash_mb=settings.hash_mb, threads=settings.threads) as session:
+        with LIVE_ENGINE_LOCK:
+            session = _live_engine_for(engine_path, settings)
             if move_payload:
                 move = _move_from_payload(board, move_payload)
                 if move is None:
@@ -653,8 +713,12 @@ def analyze_position() -> Any:
             analysis["pgn_path"] = payload.get("pgn_path", "")
             return jsonify(analysis)
     except FileNotFoundError:
+        with LIVE_ENGINE_LOCK:
+            _close_live_engine()
         return jsonify({"error": "The Stockfish executable could not be opened."}), 400
     except Exception as exc:
+        with LIVE_ENGINE_LOCK:
+            _close_live_engine()
         return jsonify({"error": str(exc)}), 500
 
 
@@ -685,7 +749,7 @@ def parse_pgn() -> Any:
 @web_app.post("/api/scan")
 def start_scan() -> Any:
     payload = request.get_json(force=True)
-    engine_path = str(payload.get("engine_path", "")).strip()
+    engine_path = _resolve_engine_path(str(payload.get("engine_path", "")).strip())
     if not engine_path:
         return jsonify({"error": "Stockfish path is required."}), 400
 
