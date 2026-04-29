@@ -36,6 +36,7 @@ const state = {
   currentFen: "startpos",
   jobId: null,
   pollTimer: null,
+  analysisRequestId: 0,
   results: [],
   activeIndex: -1,
   orientation: "white",
@@ -97,15 +98,26 @@ const el = {
   pgnPathView: document.getElementById("pgnPathView"),
   exportPgnBtn: document.getElementById("exportPgnBtn"),
   exportJsonBtn: document.getElementById("exportJsonBtn"),
+  copyFenBtn: document.getElementById("copyFenBtn"),
+  copyPgnBtn: document.getElementById("copyPgnBtn"),
 };
 
 function init() {
+  preloadClassificationIcons();
   hydrateDefaults();
   renderPiecePalette();
   renderCoords();
   renderBoard(defaults.fen || "startpos");
   wireEvents();
   previewPosition();
+}
+
+function preloadClassificationIcons() {
+  Object.values(CLASSIFICATION_ASSETS).forEach((src) => {
+    const image = new Image();
+    image.decoding = "async";
+    image.src = src;
+  });
 }
 
 function hydrateDefaults() {
@@ -194,6 +206,8 @@ function wireEvents() {
   el.hashInput.addEventListener("change", () => clampHardwareInputs());
   el.loadPgnBtn.addEventListener("click", () => el.pgnFileInput.click());
   el.pgnFileInput.addEventListener("change", onPgnSelected);
+  el.copyFenBtn?.addEventListener("click", () => copyText("fen", state.currentFen, el.copyFenBtn));
+  el.copyPgnBtn?.addEventListener("click", () => copyText("pgn", currentPgnPath(), el.copyPgnBtn));
   document.addEventListener("pointermove", onPointerMove);
   document.addEventListener("pointerup", onPointerUp);
 }
@@ -573,6 +587,25 @@ function canSelectPiece(piece) {
 
 function currentPgnPath() {
   return el.movesInput.value.trim();
+}
+
+async function copyText(label, value, button) {
+  const text = String(value || "").trim();
+  if (!text) {
+    setStatus(`No ${label.toUpperCase()} to copy yet.`);
+    return;
+  }
+  try {
+    await navigator.clipboard.writeText(text);
+    const original = button?.textContent || "Copy";
+    if (button) {
+      button.textContent = "Copied";
+      window.setTimeout(() => { button.textContent = original; }, 900);
+    }
+    setStatus(`Copied ${label.toUpperCase()}.`);
+  } catch {
+    setStatus(`Could not copy ${label.toUpperCase()}.`);
+  }
 }
 
 function classificationIconUrl(key) {
@@ -958,7 +991,14 @@ async function loadResultOnBoard(result) {
 }
 
 async function refreshAnalysis() {
-  if (!el.enginePath.value.trim()) return;
+  const requestId = ++state.analysisRequestId;
+  if (!el.enginePath.value.trim()) {
+    el.analysisEval.textContent = "No engine";
+    el.engineLines.className = "analysis-list empty-state";
+    el.engineLines.textContent = "Choose a Stockfish executable to show engine lines.";
+    await refreshDatabaseMoves(requestId);
+    return;
+  }
   el.analysisEval.textContent = "Loading";
   el.engineLines.className = "analysis-list empty-state";
   el.engineLines.textContent = "Loading Stockfish lines...";
@@ -976,8 +1016,10 @@ async function refreshAnalysis() {
     }),
   });
   const payload = await response.json();
+  if (requestId !== state.analysisRequestId) return;
   if (!response.ok) {
     setStatus(payload.error || "Live analysis failed.");
+    await refreshDatabaseMoves(requestId);
     return;
   }
   state.currentFen = payload.fen;
@@ -985,6 +1027,26 @@ async function refreshAnalysis() {
   state.legalMoves = payload.legal_moves || [];
   renderBoard(state.currentFen);
   renderAnalysis(payload);
+}
+
+async function refreshDatabaseMoves(requestId = state.analysisRequestId) {
+  el.databaseMoves.className = "analysis-list empty-state";
+  el.databaseMoves.textContent = "Loading database moves...";
+  const response = await fetch("/api/database-moves", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      fen: state.currentFen,
+      lichess_token: el.lichessToken?.value.trim() || "",
+    }),
+  });
+  const payload = await response.json();
+  if (requestId !== state.analysisRequestId) return;
+  if (!response.ok) {
+    el.databaseMoves.textContent = payload.error || "Database lookup failed.";
+    return;
+  }
+  renderDatabaseMoves(payload);
 }
 
 function renderAnalysis(payload) {
@@ -1024,17 +1086,20 @@ function renderDatabaseMoves(database) {
   const moves = database.moves || [];
   if (!moves.length) {
     el.databaseMoves.className = "analysis-list empty-state";
-    el.databaseMoves.textContent = database.error || "No database moves for this position.";
+    const sourceLabel = database.source ? `${capitalize(String(database.source))}: ` : "";
+    el.databaseMoves.textContent = `${sourceLabel}${database.error || "No database moves for this position."}`;
     return;
   }
   el.databaseMoves.className = "analysis-list";
-  el.databaseMoves.innerHTML = moves.map((move) => `
+  const source = database.source ? `<div class="analysis-source">Source: ${escapeHtml(database.source)}</div>` : "";
+  el.databaseMoves.innerHTML = `${source}${moves.map((move) => `
     <div class="analysis-line">
       <strong>${escapeHtml(move.san || move.uci)}</strong>
       <span>${escapeHtml(String(move.games || 0))} games</span>
+      ${move.popularity !== undefined ? `<span>${escapeHtml(String(move.popularity))}%</span>` : ""}
       <span>${escapeHtml(String(move.white || 0))}-${escapeHtml(String(move.draws || 0))}-${escapeHtml(String(move.black || 0))}</span>
     </div>
-  `).join("");
+  `).join("")}`;
 }
 
 function updateExports(job) {

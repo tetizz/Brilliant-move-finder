@@ -216,6 +216,10 @@ input:focus, textarea:focus, select:focus {
   pointer-events: none;
 }
 
+.hbtn.utility {
+  border-style: dashed;
+}
+
 .main {
   padding: 24px;
   min-width: 0;
@@ -513,6 +517,16 @@ input:focus, textarea:focus, select:focus {
 
 .analysis-line:last-child {
   border-bottom: 0;
+}
+
+.analysis-source {
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  padding: 4px 8px 8px;
+  border-bottom: 1px solid rgba(255,255,255,.06);
 }
 
 .eval-box {

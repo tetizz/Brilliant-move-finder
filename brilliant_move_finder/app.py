@@ -39,6 +39,7 @@ RUNTIME_DIR = Path(sys.executable).resolve().parent if getattr(sys, "frozen", Fa
 RESOURCE_DIR = Path(getattr(sys, "_MEIPASS", SOURCE_DIR))
 CONFIG_PATH = RUNTIME_DIR / "config.json"
 EXPORT_DIR = RUNTIME_DIR / "exports"
+DATABASE_CACHE: dict[str, dict[str, Any]] = {}
 
 DEFAULT_ENGINE_HINTS = [
     RUNTIME_DIR / "stockfish.exe",
@@ -390,6 +391,9 @@ def _database_moves(fen: str, limit: int = 8, lichess_token: str = "") -> dict[s
             "moves": [],
             "error": "Add a real Lichess API token to show live explorer database moves.",
         }
+    cache_key = f"{fen}|{limit}"
+    if cache_key in DATABASE_CACHE:
+        return DATABASE_CACHE[cache_key]
 
     params = urlencode({"variant": "standard", "fen": fen, "moves": limit})
     endpoints = [
@@ -423,10 +427,13 @@ def _database_moves(fen: str, limit: int = 8, lichess_token: str = "") -> dict[s
                         "white": white,
                         "draws": draws,
                         "black": black,
+                        "popularity": round((games / max(1, int(payload.get("white", 0) or 0) + int(payload.get("draws", 0) or 0) + int(payload.get("black", 0) or 0))) * 100, 1),
                     }
                 )
             if moves:
-                return {"source": source, "moves": moves, "error": ""}
+                result = {"source": source, "moves": moves, "error": ""}
+                DATABASE_CACHE[cache_key] = result
+                return result
         except HTTPError as exc:
             last_error = "Lichess explorer rejected the token." if exc.code in {401, 403} else f"Lichess explorer HTTP {exc.code}."
         except Exception as exc:
@@ -526,6 +533,21 @@ def preview() -> Any:
     )
 
 
+@web_app.post("/api/database-moves")
+def database_moves() -> Any:
+    payload = request.get_json(force=True)
+    fen = str(payload.get("fen", "") or chess.STARTING_FEN)
+    if fen == "startpos":
+        fen = chess.STARTING_FEN
+    try:
+        board = chess.Board(fen)
+    except ValueError:
+        return jsonify({"error": "Invalid FEN for database lookup."}), 400
+    config = _load_config()
+    token = _clean_lichess_token(str(payload.get("lichess_token") or _local_lichess_token(config)))
+    return jsonify(_database_moves(board.fen(), lichess_token=token))
+
+
 @web_app.post("/api/move")
 def apply_move() -> Any:
     payload = request.get_json(force=True)
@@ -584,7 +606,7 @@ def analyze_position() -> Any:
 
     settings = _build_settings(payload.get("settings", {}))
     config = _load_config()
-    lichess_token = _clean_lichess_token(str(payload.get("lichess_token", _local_lichess_token(config))))
+    lichess_token = _clean_lichess_token(str(payload.get("lichess_token") or _local_lichess_token(config)))
     move_payload = payload.get("move") or {}
     played_review = None
     played_san = ""
