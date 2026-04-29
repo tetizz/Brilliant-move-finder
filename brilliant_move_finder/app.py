@@ -153,13 +153,20 @@ def _load_config() -> dict[str, Any]:
     if not CONFIG_PATH.exists():
         return {}
     try:
-        return json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+        return json.loads(CONFIG_PATH.read_text(encoding="utf-8-sig"))
     except Exception:
         return {}
 
 
 def _save_config(payload: dict[str, Any]) -> None:
     CONFIG_PATH.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+
+def _local_lichess_token(config: dict[str, Any] | None = None) -> str:
+    env_token = _clean_lichess_token(os.environ.get("LICHESS_TOKEN", ""))
+    if env_token:
+        return env_token
+    return _clean_lichess_token(str((config or {}).get("lichess_token", "")))
 
 
 def _result_to_dict(result: BrilliantResult) -> dict[str, Any]:
@@ -483,7 +490,7 @@ def index() -> str:
     config = _load_config()
     defaults = {
         "engine_path": config.get("engine_path", _default_engine_path()),
-        "lichess_token": _clean_lichess_token(str(config.get("lichess_token", ""))),
+        "lichess_token": _local_lichess_token(config),
         "fen": config.get("fen", ""),
         "moves": config.get("moves", ""),
         "preset": config.get("preset", "Balanced"),
@@ -577,7 +584,7 @@ def analyze_position() -> Any:
 
     settings = _build_settings(payload.get("settings", {}))
     config = _load_config()
-    lichess_token = _clean_lichess_token(str(payload.get("lichess_token", config.get("lichess_token", ""))))
+    lichess_token = _clean_lichess_token(str(payload.get("lichess_token", _local_lichess_token(config))))
     move_payload = payload.get("move") or {}
     played_review = None
     played_san = ""
@@ -662,7 +669,8 @@ def start_scan() -> Any:
 
     board = board_from_input(payload.get("fen", ""), payload.get("moves", ""))
     settings = _build_settings(payload.get("settings", {}))
-    lichess_token = _clean_lichess_token(str(payload.get("lichess_token", "")))
+    config = _load_config()
+    lichess_token = _clean_lichess_token(str(payload.get("lichess_token", _local_lichess_token(config))))
 
     _save_config(
         {
