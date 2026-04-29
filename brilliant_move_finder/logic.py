@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Callable, Iterable
+import heapq
 import math
 import threading
 
@@ -288,16 +289,174 @@ def broad_legal_children(
     )
     ordered: list[chess.Move] = []
     seen: set[str] = set()
+    engine_rank: dict[str, int] = {}
     for entry in infos:
         pv = entry.get("pv") or []
         if pv and pv[0] in legal and pv[0].uci() not in seen:
+            engine_rank[pv[0].uci()] = len(engine_rank)
             ordered.append(pv[0])
             seen.add(pv[0].uci())
     for move in legal:
         if move.uci() not in seen:
             ordered.append(move)
             seen.add(move.uci())
-    return ordered
+    return sorted(ordered, key=lambda move: child_move_priority(board, move, engine_rank))
+
+
+def child_move_priority(board: chess.Board, move: chess.Move, engine_rank: dict[str, int]) -> tuple[int, int, str]:
+    """Prefer shallow tactical bait before plain quiet moves.
+
+    Brilliant move searches need to reach non-engine setup paths such as
+    Nf3 g5 Nxg5 f6 e4 quickly. A pure engine frontier misses those because the
+    setup moves can be objectively suspicious before the tactic appears.
+    """
+
+    key = move.uci()
+    if key in engine_rank:
+        return (0, engine_rank[key], key)
+
+    moved_piece = board.piece_at(move.from_square)
+    is_capture = board.is_capture(move)
+    gives_check = board.gives_check(move)
+    is_promotion = move.promotion is not None
+    is_pawn_lunge = (
+        moved_piece is not None
+        and moved_piece.piece_type == chess.PAWN
+        and abs(chess.square_rank(move.to_square) - chess.square_rank(move.from_square)) == 2
+    )
+    attacks_enemy_piece = move_attacks_enemy_piece(board, move)
+    develops_piece = moved_piece is not None and moved_piece.piece_type in {chess.KNIGHT, chess.BISHOP}
+
+    if gives_check or is_capture or is_promotion:
+        bucket = 1
+    elif attacks_enemy_piece:
+        bucket = 2
+    elif is_pawn_lunge:
+        bucket = 3
+    elif develops_piece:
+        bucket = 4
+    else:
+        bucket = 5
+    return (bucket, 0, key)
+
+
+def move_attacks_enemy_piece(board: chess.Board, move: chess.Move) -> bool:
+    moved_piece = board.piece_at(move.from_square)
+    if moved_piece is None:
+        return False
+    temp = board.copy(stack=False)
+    if move not in temp.legal_moves:
+        return False
+    temp.push(move)
+    piece = temp.piece_at(move.to_square)
+    if piece is None:
+        return False
+    enemy = not piece.color
+    attacks = temp.attacks(move.to_square)
+    return any(temp.piece_at(square) and temp.piece_at(square).color == enemy for square in attacks)
+
+
+def child_search_cost(priority: tuple[int, int, str]) -> int:
+    bucket, rank, _ = priority
+    if bucket == 0:
+        return 60 + rank * 2
+    if bucket == 1:
+        return 70
+    if bucket == 2:
+        return 72
+    if bucket == 3:
+        return 95
+    if bucket == 4:
+        return 100
+    return 130
+
+
+def is_forcing_or_bait_move(board: chess.Board, move: chess.Move) -> bool:
+    moved_piece = board.piece_at(move.from_square)
+    is_pawn_lunge = (
+        moved_piece is not None
+        and moved_piece.piece_type == chess.PAWN
+        and abs(chess.square_rank(move.to_square) - chess.square_rank(move.from_square)) == 2
+    )
+    return board.is_capture(move) or board.gives_check(move) or move_attacks_enemy_piece(board, move) or is_pawn_lunge
+
+
+def is_sacrifice_probe_move(board: chess.Board, move: chess.Move) -> bool:
+    moved_piece = board.piece_at(move.from_square)
+    return (
+        board.is_capture(move)
+        or board.gives_check(move)
+        or move_attacks_enemy_piece(board, move)
+        or (moved_piece is not None and moved_piece.piece_type in {chess.KNIGHT, chess.BISHOP})
+    )
+
+
+def quick_tactic_seed_nodes(
+    engine: chess.engine.SimpleEngine,
+    board: chess.Board,
+    settings: SearchSettings,
+    cancel_event: threading.Event,
+    cache: AnalysisCache,
+) -> list[tuple[chess.Board, list[chess.Move]]]:
+    """Seed short non-engine tactic paths before the general tree search.
+
+    This catches motifs like Nf3 g5 Nxg5 f6 e4, where the route into the
+    tactic is not itself an engine main line, but the quiet follow-up can be a
+    genuine brilliant move once the piece sacrifice is live.
+    """
+
+    seeds: list[tuple[chess.Board, list[chess.Move]]] = []
+    max_seeds = max(160, settings.frontier_width * 80)
+    first_moves = broad_legal_children(engine, board, settings, cancel_event, cache)[: max(10, settings.frontier_width * 3)]
+    for first in first_moves:
+        first_seed_count = 0
+        first_board = board.copy(stack=False)
+        if first not in first_board.legal_moves:
+            continue
+        first_board.push(first)
+        second_moves = [
+            move
+            for move in broad_legal_children(engine, first_board, settings, cancel_event, cache)[: max(12, settings.frontier_width * 4)]
+            if is_forcing_or_bait_move(first_board, move)
+        ]
+        for second in second_moves:
+            second_seed_count = 0
+            second_board = first_board.copy(stack=False)
+            if second not in second_board.legal_moves:
+                continue
+            second_board.push(second)
+            third_moves = [
+                move
+                for move in broad_legal_children(engine, second_board, settings, cancel_event, cache)[: max(12, settings.frontier_width * 4)]
+                if is_sacrifice_probe_move(second_board, move)
+            ]
+            for third in third_moves:
+                third_board = second_board.copy(stack=False)
+                if third not in third_board.legal_moves:
+                    continue
+                third_board.push(third)
+                fourth_moves = [
+                    move
+                    for move in broad_legal_children(engine, third_board, settings, cancel_event, cache)[: max(12, settings.frontier_width * 4)]
+                    if is_forcing_or_bait_move(third_board, move)
+                ]
+                for fourth in fourth_moves:
+                    fourth_board = third_board.copy(stack=False)
+                    if fourth not in fourth_board.legal_moves:
+                        continue
+                    fourth_board.push(fourth)
+                    seeds.append((fourth_board, [first, second, third, fourth]))
+                    first_seed_count += 1
+                    second_seed_count += 1
+                    if len(seeds) >= max_seeds:
+                        return seeds
+                    if second_seed_count >= 8:
+                        break
+                if first_seed_count >= 128:
+                    break
+            if first_seed_count >= 128:
+                break
+    return seeds
 
 
 def san_path(board: chess.Board, moves: list[chess.Move]) -> list[str]:
@@ -456,13 +615,40 @@ def find_brilliant_moves(
                 if on_result:
                     on_result(result)
 
-        for child_move in broad_legal_children(engine, node, settings, cancel_event, cache):
+    queue: list[tuple[int, int, chess.Board, list[chess.Move], int]] = []
+    queue_sequence = 0
+    heapq.heappush(queue, (0, queue_sequence, board.copy(stack=False), [], 0))
+    for seed_board, seed_path in quick_tactic_seed_nodes(engine, board, settings, cancel_event, cache):
+        queue_sequence += 1
+        heapq.heappush(queue, (-500 + len(seed_path) * 10, queue_sequence, seed_board, seed_path, len(seed_path)))
+    while queue and node_counter < settings.tree_node_cap:
+        search_score, _, node, path, ply = heapq.heappop(queue)
+        before_count = node_counter
+        evaluate_node(node, path, ply)
+        if node_counter == before_count:
+            continue
+        if ply >= settings.tree_max_ply or node_counter >= settings.tree_node_cap:
+            continue
+        for child_index, child_move in enumerate(broad_legal_children(engine, node, settings, cancel_event, cache)):
             assert_active(cancel_event)
             next_board = node.copy(stack=False)
             if child_move not in next_board.legal_moves:
                 continue
             next_board.push(child_move)
-            evaluate_node(next_board, path + [child_move], ply + 1)
+            queue_sequence += 1
+            if child_index < max(settings.multipv, settings.frontier_width):
+                priority = (0, child_index, child_move.uci())
+            else:
+                priority = child_move_priority(node, child_move, {})
+            heapq.heappush(
+                queue,
+                (
+                    search_score + child_search_cost(priority),
+                    queue_sequence,
+                    next_board,
+                    path + [child_move],
+                    ply + 1,
+                ),
+            )
 
-    evaluate_node(board.copy(stack=False), [], 0)
     return results

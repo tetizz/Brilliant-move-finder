@@ -379,6 +379,30 @@ def _move_is_real_sacrifice(previous_board: chess.Board, move: chess.Move) -> bo
     return moved_value >= 3 and (apparent_sac or quiet_sac)
 
 
+def _move_preserves_active_piece_sacrifice(
+    previous_board: chess.Board,
+    current_board: chess.Board,
+    move: chess.Move,
+    move_color: chess.Color,
+) -> bool:
+    moved_piece = previous_board.piece_at(move.from_square)
+    if moved_piece is None or moved_piece.piece_type != chess.PAWN:
+        return False
+    previous_unsafe = get_unsafe_pieces(previous_board, move_color)
+    current_unsafe = get_unsafe_pieces(current_board, move_color, move)
+    if not current_unsafe:
+        return False
+    previous_unsafe_squares = {piece.square for piece in previous_unsafe}
+    for piece in current_unsafe:
+        if piece.piece_type in {chess.PAWN, chess.KING}:
+            continue
+        if _piece_value(piece.piece_type) < 3:
+            continue
+        if piece.square in previous_unsafe_squares or previous_unsafe:
+            return True
+    return False
+
+
 def _consider_brilliant(
     previous_board: chess.Board,
     current_board: chess.Board,
@@ -390,7 +414,14 @@ def _consider_brilliant(
 ) -> bool:
     if not _is_critical_candidate(previous_board, previous_eval, current_eval, second_best_eval, move, move_color):
         return False
-    if not _move_is_real_sacrifice(previous_board, move):
+    is_direct_sacrifice = _move_is_real_sacrifice(previous_board, move)
+    is_sacrificial_followup = _move_preserves_active_piece_sacrifice(
+        previous_board,
+        current_board,
+        move,
+        move_color,
+    )
+    if not (is_direct_sacrifice or is_sacrificial_followup):
         return False
 
     previous_unsafe = get_unsafe_pieces(previous_board, move_color)
