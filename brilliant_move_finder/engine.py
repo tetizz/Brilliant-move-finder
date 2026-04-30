@@ -89,7 +89,10 @@ class StockfishSession:
         if self._engine is None:
             return
         try:
-            self._engine.quit()
+            # Some bundled Stockfish builds can return analysis but stall while
+            # answering the UCI "quit" command. Closing the transport avoids
+            # locking the UI or test process during live-analysis refreshes.
+            self._engine.close()
         finally:
             self._engine = None
 

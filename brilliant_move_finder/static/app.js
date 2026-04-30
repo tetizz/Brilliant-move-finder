@@ -1003,7 +1003,8 @@ async function cancelScan() {
 
 function updateJobView(job) {
   setStatus(job.status === "running" ? "Scanning..." : capitalize(job.status));
-  el.progressLog.textContent = (job.progress || []).join("\n");
+  const progress = job.progress || [];
+  el.progressLog.textContent = progress.length ? progress.join("\n") : "Engine search is queued. Waiting for the first Stockfish update...";
   el.progressLog.scrollTop = el.progressLog.scrollHeight;
   el.resultCount.textContent = `${job.result_count || 0} hit${job.result_count === 1 ? "" : "s"}`;
   renderResults(job.results || []);
@@ -1133,6 +1134,7 @@ async function refreshAnalysis() {
     el.analysisEval.textContent = "No engine";
     el.engineLines.className = "analysis-list empty-state";
     el.engineLines.textContent = "Choose a Stockfish executable to show engine lines.";
+    recordActivity("Live analysis paused: choose a Stockfish executable.");
     await refreshDatabaseMoves(requestId);
     return;
   }
@@ -1141,6 +1143,8 @@ async function refreshAnalysis() {
   el.engineLines.textContent = "Loading Stockfish lines...";
   el.databaseMoves.className = "analysis-list empty-state";
   el.databaseMoves.textContent = "Loading database moves...";
+  const settings = collectSettings();
+  recordActivity(`Analyzing ${fenSummary(state.currentFen)} at depth ${settings.root_depth}, MultiPV ${settings.multipv}...`);
   const response = await fetch("/api/analyze-position", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -1148,7 +1152,7 @@ async function refreshAnalysis() {
       engine_path: el.enginePath.value.trim(),
       lichess_token: el.lichessToken?.value.trim() || "",
       fen: state.currentFen,
-      settings: collectSettings(),
+      settings,
       pgn_path: currentPgnPath(),
     }),
   });
@@ -1156,6 +1160,7 @@ async function refreshAnalysis() {
   if (requestId !== state.analysisRequestId) return;
   if (!response.ok) {
     setStatus(payload.error || "Live analysis failed.");
+    recordActivity(`Live analysis failed: ${payload.error || "unknown Stockfish error"}`);
     el.analysisEval.textContent = "No live eval";
     el.engineLines.className = "analysis-list empty-state";
     el.engineLines.textContent = payload.error || "Live analysis failed.";
@@ -1168,6 +1173,7 @@ async function refreshAnalysis() {
   state.legalMoves = payload.legal_moves || [];
   renderBoard(state.currentFen);
   renderAnalysis(payload);
+  recordActivity(`Live analysis ready: ${payload.eval?.display || "0.00"} with ${(payload.engine_lines || []).length} Stockfish line${(payload.engine_lines || []).length === 1 ? "" : "s"}.`);
 }
 
 async function refreshDatabaseMoves(requestId = state.analysisRequestId) {
@@ -1195,25 +1201,33 @@ function renderAnalysis(payload) {
   el.boardMeta.textContent = `${payload.legal_move_count} legal moves${payload.is_check ? " | check" : ""}${payload.opening_name ? ` | ${payload.opening_name}` : ""}`;
   el.turnBadge.textContent = payload.turn === "white" ? "White to move" : "Black to move";
   el.pgnPathView.textContent = currentPgnPath() || payload.pgn_path || "No played line yet.";
+  const analysisSettings = payload.analysis_settings || {};
   if (payload.played_classification) {
     const cls = payload.played_classification;
-    el.moveReview.innerHTML = `${classificationBadgeHtml(cls)} <strong>${escapeHtml(payload.played_san || "Move")}</strong>: ${escapeHtml(cls.reason)}`;
+    el.moveReview.innerHTML = `
+      <div class="review-line">${classificationBadgeHtml(cls)} <strong>${escapeHtml(payload.played_san || "Move")}</strong>: ${escapeHtml(cls.reason)}</div>
+      <div class="analysis-note">Classified with depth ${escapeHtml(analysisSettings.depth || "?")} / MultiPV ${escapeHtml(analysisSettings.multipv || "?")}.</div>
+    `;
+  } else {
+    el.moveReview.innerHTML = `<span class="analysis-note">Live classifier ready at depth ${escapeHtml(analysisSettings.depth || "?")} / MultiPV ${escapeHtml(analysisSettings.multipv || "?")}. Play a move to review it.</span>`;
   }
-  renderEngineLines(payload.engine_lines || []);
+  renderEngineLines(payload.engine_lines || [], analysisSettings);
   renderDatabaseMoves(payload.database || {});
 }
 
-function renderEngineLines(lines) {
+function renderEngineLines(lines, settings = {}) {
   if (!lines.length) {
     el.engineLines.className = "analysis-list empty-state";
     el.engineLines.textContent = "No engine lines available.";
     return;
   }
   el.engineLines.className = "analysis-list";
-  el.engineLines.innerHTML = lines.map((line) => {
+  const meta = `<div class="analysis-source">Deep live classification: depth ${escapeHtml(settings.depth || "?")} | MultiPV ${escapeHtml(settings.multipv || lines.length)}</div>`;
+  el.engineLines.innerHTML = meta + lines.map((line) => {
     const cls = line.classification || {};
     return `
       <div class="analysis-line">
+        <span class="analysis-rank">#${escapeHtml(line.rank || "")}</span>
         <span class="eval-box">${escapeHtml(line.eval?.display || "")}</span>
         ${classificationBadgeHtml(cls, { tiny: true })}
         <strong>${escapeHtml(line.move_san || "")}</strong>
@@ -1271,13 +1285,29 @@ function resetResults() {
   renderResultBucket(el.lowResultsList, [], "Search running...");
   el.detailsView.className = "details empty-state";
   el.detailsView.textContent = "Waiting for the first brilliant hit.";
-  el.progressLog.textContent = "";
+  el.progressLog.textContent = "Ready. Start a scan or move on the analysis board to see Stockfish activity here.";
   el.resultCount.textContent = "0 hits";
   updateExports({ id: "", result_count: 0 });
 }
 
 function setStatus(text) {
   el.statusText.textContent = text;
+}
+
+function recordActivity(message) {
+  if (!el.progressLog || state.jobId) return;
+  const timestamp = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+  const line = `[${timestamp}] ${message}`;
+  const existing = el.progressLog.textContent.trim();
+  const next = existing && !existing.startsWith("Ready.") ? `${existing}\n${line}` : line;
+  el.progressLog.textContent = next.split("\n").slice(-80).join("\n");
+  el.progressLog.scrollTop = el.progressLog.scrollHeight;
+}
+
+function fenSummary(fen) {
+  if (!fen || fen === "startpos") return "starting position";
+  const parts = String(fen).split(" ");
+  return `${parts[1] === "b" ? "black" : "white"} to move`;
 }
 
 function capitalize(text) {

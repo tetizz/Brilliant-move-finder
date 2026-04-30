@@ -568,9 +568,35 @@ def find_brilliant_moves(
                 quick_profile.is_real_sacrifice or quick_profile.is_hanging_offer,
             )
             if confidence_bucket:
+                deep_root_infos = analyse(
+                    engine,
+                    node,
+                    settings.root_depth,
+                    multipv=min(node.legal_moves.count(), max(settings.multipv, 2)),
+                    cache=cache,
+                )
+                deep_previous_lines = [eval_from_info(entry, node) for entry in deep_root_infos] or previous_lines
                 deep_infos = analyse(engine, candidate_after, settings.root_depth, multipv=1, cache=cache)
                 deep_eval = eval_from_info(deep_infos[0], candidate_after) if deep_infos else current_eval
-                classification = classify_move(node, candidate_move, previous_lines, deep_eval)
+                deep_matching_line = next((line for line in deep_previous_lines if line.pv and line.pv[0] == candidate_move), None)
+                if deep_matching_line is not None:
+                    deep_eval_for_classification = EvalResult(
+                        cp=deep_matching_line.cp,
+                        pv=deep_matching_line.pv[1:],
+                        score_type=deep_matching_line.score_type,
+                        value=deep_matching_line.value,
+                    )
+                else:
+                    deep_eval_for_classification = deep_eval
+                classification = classify_move(node, candidate_move, deep_previous_lines, deep_eval_for_classification)
+                if classification.key == "brilliant":
+                    confidence_bucket = "high"
+                elif classification.key in {"great", "best", "excellent", "good"} and (
+                    quick_profile.is_real_sacrifice or quick_profile.is_hanging_offer
+                ):
+                    confidence_bucket = "low"
+                else:
+                    continue
 
                 reply_infos = analyse(
                     engine,

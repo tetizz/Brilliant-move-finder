@@ -608,6 +608,11 @@ def _build_analysis_payload(board: chess.Board, session: StockfishSession, setti
         "eval": _eval_to_dict(best_eval),
         "engine_lines": classified_lines,
         "database": _database_moves(board.fen(), lichess_token=lichess_token),
+        "analysis_settings": {
+            "depth": settings.root_depth,
+            "multipv": settings.multipv,
+            "think_time_ms": settings.think_time_ms,
+        },
     }
 
 
@@ -877,8 +882,8 @@ def analyze_position() -> Any:
                         session,
                         after,
                         settings,
-                        depth=settings.shallow_depth,
-                        movetime_ms=max(500, min(settings.think_time_ms, 3000)),
+                        depth=settings.root_depth,
+                        movetime_ms=settings.think_time_ms,
                         kind=f"move-review-after-{move.uci()}",
                     )
 
