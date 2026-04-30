@@ -23,15 +23,17 @@ import webview
 if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
     from brilliant_move_finder.analyzer import board_from_input
+    from brilliant_move_finder.cache import DiskCache, eval_result_from_cache, eval_result_to_cache
     from brilliant_move_finder.classifications import classify_move, get_opening_name
     from brilliant_move_finder.engine import EvalResult, StockfishSession, pv_to_san
-    from brilliant_move_finder.logic import BrilliantResult, CancelledError, SearchSettings, find_brilliant_moves
+    from brilliant_move_finder.logic import BrilliantResult, CancelledError, SearchSettings, configure_analysis_cache, find_brilliant_moves
     from brilliant_move_finder.report import export_results_to_json, export_results_to_pgn
 else:
     from .analyzer import board_from_input
+    from .cache import DiskCache, eval_result_from_cache, eval_result_to_cache
     from .classifications import classify_move, get_opening_name
     from .engine import EvalResult, StockfishSession, pv_to_san
-    from .logic import BrilliantResult, CancelledError, SearchSettings, find_brilliant_moves
+    from .logic import BrilliantResult, CancelledError, SearchSettings, configure_analysis_cache, find_brilliant_moves
     from .report import export_results_to_json, export_results_to_pgn
 
 
@@ -40,10 +42,12 @@ RUNTIME_DIR = Path(sys.executable).resolve().parent if getattr(sys, "frozen", Fa
 RESOURCE_DIR = Path(getattr(sys, "_MEIPASS", SOURCE_DIR))
 CONFIG_PATH = RUNTIME_DIR / "config.json"
 EXPORT_DIR = RUNTIME_DIR / "exports"
+DISK_CACHE = DiskCache(RUNTIME_DIR / "brilliant_data" / "cache")
 DATABASE_CACHE: dict[str, dict[str, Any]] = {}
 LIVE_ENGINE_LOCK = threading.Lock()
 LIVE_ENGINE_SESSION: StockfishSession | None = None
 LIVE_ENGINE_KEY = ""
+configure_analysis_cache(DISK_CACHE)
 
 DEFAULT_ENGINE_HINTS = [
     RUNTIME_DIR / "stockfish.exe",
@@ -354,6 +358,78 @@ def _format_eval(result: EvalResult) -> str:
     return f"{result.value / 100:+.2f}"
 
 
+def _engine_cache_key(
+    board: chess.Board,
+    settings: SearchSettings,
+    *,
+    kind: str,
+    depth: int,
+    multipv: int = 1,
+    movetime_ms: int | None = None,
+) -> dict[str, Any]:
+    return {
+        "schema": 2,
+        "kind": kind,
+        "fen": board.fen(),
+        "turn": "white" if board.turn == chess.WHITE else "black",
+        "depth": int(depth),
+        "multipv": int(multipv),
+        "movetime_ms": int(movetime_ms or 0),
+        "settings_multipv": int(settings.multipv),
+    }
+
+
+def _cached_multipv(
+    session: StockfishSession,
+    board: chess.Board,
+    settings: SearchSettings,
+    *,
+    depth: int,
+    lines: int,
+    movetime_ms: int | None,
+    kind: str,
+) -> list[EvalResult]:
+    key = _engine_cache_key(
+        board,
+        settings,
+        kind=kind,
+        depth=depth,
+        multipv=lines,
+        movetime_ms=movetime_ms,
+    )
+    cached = DISK_CACHE.load_json("live-multipv", key)
+    if isinstance(cached, list):
+        return [eval_result_from_cache(entry) for entry in cached]
+    results = session.multipv(board, depth=depth, lines=lines, movetime_ms=movetime_ms)
+    DISK_CACHE.save_json("live-multipv", key, [eval_result_to_cache(result) for result in results])
+    return results
+
+
+def _cached_analyse(
+    session: StockfishSession,
+    board: chess.Board,
+    settings: SearchSettings,
+    *,
+    depth: int,
+    movetime_ms: int | None,
+    kind: str,
+) -> EvalResult:
+    key = _engine_cache_key(
+        board,
+        settings,
+        kind=kind,
+        depth=depth,
+        multipv=1,
+        movetime_ms=movetime_ms,
+    )
+    cached = DISK_CACHE.load_json("live-analyse", key)
+    if isinstance(cached, dict):
+        return eval_result_from_cache(cached)
+    result = session.analyse(board, depth=depth, movetime_ms=movetime_ms)
+    DISK_CACHE.save_json("live-analyse", key, eval_result_to_cache(result))
+    return result
+
+
 def _move_from_payload(board: chess.Board, payload: dict[str, Any]) -> chess.Move | None:
     move_uci = str(payload.get("move_uci", "")).strip()
     if move_uci:
@@ -444,6 +520,11 @@ def _database_moves(fen: str, limit: int = 8, lichess_token: str = "") -> dict[s
     cache_key = f"{fen}|{limit}"
     if cache_key in DATABASE_CACHE:
         return DATABASE_CACHE[cache_key]
+    disk_key = {"schema": 2, "fen": fen, "limit": int(limit), "token_present": bool(token)}
+    cached = DISK_CACHE.load_json("lichess-database", disk_key)
+    if isinstance(cached, dict):
+        DATABASE_CACHE[cache_key] = cached
+        return cached
 
     params = urlencode({"variant": "standard", "fen": fen, "moves": limit})
     endpoints = [
@@ -483,26 +564,39 @@ def _database_moves(fen: str, limit: int = 8, lichess_token: str = "") -> dict[s
             if moves:
                 result = {"source": source, "moves": moves, "error": ""}
                 DATABASE_CACHE[cache_key] = result
+                DISK_CACHE.save_json("lichess-database", disk_key, result)
                 return result
         except HTTPError as exc:
             last_error = "Lichess explorer rejected the token." if exc.code in {401, 403} else f"Lichess explorer HTTP {exc.code}."
         except Exception as exc:
             last_error = str(exc)
-    return {"source": "fallback", "moves": [], "error": last_error or "No database moves found."}
+    result = {"source": "fallback", "moves": [], "error": last_error or "No database moves found."}
+    DISK_CACHE.save_json("lichess-database", disk_key, result)
+    return result
 
 
 def _build_analysis_payload(board: chess.Board, session: StockfishSession, settings: SearchSettings, lichess_token: str = "") -> dict[str, Any]:
-    lines = session.multipv(
+    lines = _cached_multipv(
+        session,
         board,
+        settings,
         depth=settings.root_depth,
         lines=settings.multipv,
         movetime_ms=settings.think_time_ms,
+        kind="position-lines",
     )
     classified_lines = [
         _line_to_dict(board, line, index + 1, _classify_line_candidate(board, lines, line))
         for index, line in enumerate(lines)
     ]
-    best_eval = lines[0] if lines else session.analyse(board, settings.root_depth, movetime_ms=settings.think_time_ms)
+    best_eval = lines[0] if lines else _cached_analyse(
+        session,
+        board,
+        settings,
+        depth=settings.root_depth,
+        movetime_ms=settings.think_time_ms,
+        kind="position-best",
+    )
     return {
         "fen": board.fen(),
         "turn": "white" if board.turn == chess.WHITE else "black",
@@ -679,11 +773,14 @@ def analyze_position() -> Any:
                 if move is None:
                     return jsonify({"error": "Illegal move for the current position."}), 400
 
-                previous_lines = session.multipv(
+                previous_lines = _cached_multipv(
+                    session,
                     board,
+                    settings,
                     depth=settings.root_depth,
                     lines=settings.multipv,
                     movetime_ms=settings.think_time_ms,
+                    kind="move-review-before",
                 )
                 played_san = board.san(move)
                 matching_line = next((line for line in previous_lines if line.pv and line.pv[0] == move), None)
@@ -697,10 +794,13 @@ def analyze_position() -> Any:
                 else:
                     after = board.copy(stack=False)
                     after.push(move)
-                    current_eval = session.analyse(
+                    current_eval = _cached_analyse(
+                        session,
                         after,
-                        settings.shallow_depth,
+                        settings,
+                        depth=settings.shallow_depth,
                         movetime_ms=max(500, min(settings.think_time_ms, 3000)),
+                        kind=f"move-review-after-{move.uci()}",
                     )
 
                 played_review = classify_move(board, move, previous_lines, current_eval).to_dict()

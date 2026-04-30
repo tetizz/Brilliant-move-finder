@@ -9,6 +9,7 @@ import threading
 import chess
 import chess.engine
 
+from .cache import DiskCache, engine_info_from_cache, engine_info_to_cache
 from .classifications import classify_move, classify_scan_candidate
 from .engine import EvalResult
 
@@ -93,6 +94,12 @@ class CancelledError(RuntimeError):
 
 ProgressCallback = Callable[[str], None]
 ResultCallback = Callable[[BrilliantResult], None]
+PERSISTENT_ANALYSIS_CACHE: DiskCache | None = None
+
+
+def configure_analysis_cache(cache: DiskCache | None) -> None:
+    global PERSISTENT_ANALYSIS_CACHE
+    PERSISTENT_ANALYSIS_CACHE = cache
 
 
 @dataclass(slots=True)
@@ -224,6 +231,20 @@ def analyse(
     cached = cache.get(board, depth, multipv) if cache else None
     if cached is not None:
         return cached
+    disk_key = {
+        "schema": 2,
+        "fen": board.fen(),
+        "turn": "white" if board.turn == chess.WHITE else "black",
+        "depth": int(depth),
+        "multipv": int(multipv),
+    }
+    if PERSISTENT_ANALYSIS_CACHE is not None:
+        disk_payload = PERSISTENT_ANALYSIS_CACHE.load_json("search-engine-info", disk_key)
+        if isinstance(disk_payload, list):
+            infos = [engine_info_from_cache(entry) for entry in disk_payload]
+            if cache:
+                cache.put(board, depth, multipv, infos)
+            return infos
     info = engine.analyse(
         board,
         chess.engine.Limit(depth=depth),
@@ -233,6 +254,12 @@ def analyse(
     infos = [info] if isinstance(info, dict) else list(info)
     if cache:
         cache.put(board, depth, multipv, infos)
+    if PERSISTENT_ANALYSIS_CACHE is not None:
+        PERSISTENT_ANALYSIS_CACHE.save_json(
+            "search-engine-info",
+            disk_key,
+            [engine_info_to_cache(entry) for entry in infos],
+        )
     return infos
 
 

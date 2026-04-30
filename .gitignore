@@ -6,6 +6,7 @@ __pycache__/
 venv/
 stockfish/
 exports/
+brilliant_data/
 config.json
 build/
 dist/
