@@ -96,6 +96,7 @@ const el = {
   databaseMoves: document.getElementById("databaseMoves"),
   moveReview: document.getElementById("moveReview"),
   pgnPathView: document.getElementById("pgnPathView"),
+  lineMoveTree: document.getElementById("lineMoveTree"),
   exportPgnBtn: document.getElementById("exportPgnBtn"),
   exportJsonBtn: document.getElementById("exportJsonBtn"),
   copyFenBtn: document.getElementById("copyFenBtn"),
@@ -208,6 +209,14 @@ function wireEvents() {
   el.pgnFileInput.addEventListener("change", onPgnSelected);
   el.copyFenBtn?.addEventListener("click", () => copyText("fen", state.currentFen, el.copyFenBtn));
   el.copyPgnBtn?.addEventListener("click", () => copyText("pgn", currentPgnPath(), el.copyPgnBtn));
+  el.lineMoveTree?.addEventListener("click", (event) => {
+    const target = event.target;
+    if (!(target instanceof HTMLElement)) return;
+    const node = target.closest("[data-line-tree-fen]");
+    if (!(node instanceof HTMLElement)) return;
+    event.preventDefault();
+    void openLineTreeNode(node.dataset.lineTreeFen || "", node.dataset.lineTreePath || "");
+  });
   document.addEventListener("pointermove", onPointerMove);
   document.addEventListener("pointerup", onPointerUp);
 }
@@ -266,6 +275,7 @@ async function previewPosition() {
   el.boardMeta.textContent = `${payload.legal_move_count} legal moves${payload.is_check ? " | check" : ""}`;
   el.turnBadge.textContent = payload.turn === "white" ? "White to move" : "Black to move";
   syncTurnButton();
+  await refreshLineMoveTree();
   await refreshAnalysis();
 }
 
@@ -613,6 +623,7 @@ async function tryBoardMove(fromSquare, toSquare) {
   syncTurnButton();
   renderAnalysis(payload);
   setStatus(`Played ${payload.played_san || moveResult.san || legal.san}`);
+  await refreshLineMoveTree();
 }
 
 function canSelectPiece(piece) {
@@ -623,6 +634,95 @@ function canSelectPiece(piece) {
 
 function currentPgnPath() {
   return el.movesInput.value.trim();
+}
+
+async function refreshLineMoveTree() {
+  if (!el.lineMoveTree) return;
+  const moves = currentPgnPath();
+  if (!moves) {
+    el.lineMoveTree.className = "line-move-tree empty-state";
+    el.lineMoveTree.textContent = "Play or load a PGN line to build a clickable move tree.";
+    return;
+  }
+  try {
+    const response = await fetch("/api/move-tree", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ moves }),
+    });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.error || "Could not build move tree.");
+    renderLineMoveTree(payload);
+  } catch (error) {
+    el.lineMoveTree.className = "line-move-tree empty-state";
+    el.lineMoveTree.textContent = error.message || "Could not build move tree.";
+  }
+}
+
+function renderLineMoveTree(tree) {
+  if (!el.lineMoveTree) return;
+  const children = tree?.root?.children || [];
+  if (!children.length) {
+    el.lineMoveTree.className = "line-move-tree empty-state";
+    el.lineMoveTree.textContent = tree?.error || "Play or load a PGN line to build a clickable move tree.";
+    return;
+  }
+  el.lineMoveTree.className = "line-move-tree";
+  el.lineMoveTree.innerHTML = `
+    <div class="line-tree-summary">
+      <span>${Number(tree.total_moves || 0)} moves mapped</span>
+      ${tree.error ? `<span class="warn">${escapeHtml(tree.error)}</span>` : `<span>Click any node to load that position</span>`}
+    </div>
+    <div class="line-tree-root">
+      ${children.map((node) => renderLineMoveTreeNode(node, 0)).join("")}
+    </div>
+  `;
+}
+
+function renderLineMoveTreeNode(node, depth = 0) {
+  const children = Array.isArray(node?.children) ? node.children : [];
+  const path = (node?.path_san || []).join(" ");
+  const opening = node?.opening_name ? `<div class="line-tree-opening">${escapeHtml(node.opening_name)}</div>` : "";
+  const row = `
+    <div class="line-tree-row" style="--depth:${depth}">
+      <span class="line-tree-rail"></span>
+      <button class="line-tree-node-button ${node?.color === "black" ? "black" : "white"}" type="button" data-line-tree-fen="${escapeHtml(node?.position_fen || "")}" data-line-tree-path="${escapeHtml(path)}" title="Load this position">
+        <strong>${escapeHtml(node?.san || "")}</strong>
+        <span>+</span>
+      </button>
+      <div class="line-tree-copy">
+        <div class="line-tree-role">${escapeHtml(node?.role || "")}</div>
+        <div class="line-tree-path">${escapeHtml(path)}</div>
+        ${opening}
+      </div>
+    </div>
+  `;
+  if (!children.length) {
+    return `<article class="line-tree-entry leaf">${row}</article>`;
+  }
+  return `
+    <details class="line-tree-entry" ${depth < 6 ? "open" : ""}>
+      <summary>${row}</summary>
+      <div class="line-tree-children">
+        ${children.map((child) => renderLineMoveTreeNode(child, depth + 1)).join("")}
+      </div>
+    </details>
+  `;
+}
+
+async function openLineTreeNode(fen, path) {
+  if (!fen) return;
+  state.currentFen = fen;
+  state.editorTurn = parseFenState(fen).turn;
+  state.selectedSquare = null;
+  state.classificationOverlay = null;
+  state.lastMoveSquares = null;
+  el.fenInput.value = fen;
+  if (path) el.movesInput.value = path;
+  renderBoard(fen);
+  setStatus(path ? `Loaded tree position after ${path}.` : "Loaded tree position.");
+  await refreshAnalysis();
+  await refreshLineMoveTree();
 }
 
 async function copyText(label, value, button) {
@@ -1023,6 +1123,7 @@ async function loadResultOnBoard(result) {
   el.movesInput.value = result.pgn_path || result.path_label || "";
   renderBoard(state.currentFen);
   setStatus(`Loaded ${result.move_san} on the analysis board.`);
+  await refreshLineMoveTree();
   await refreshAnalysis();
 }
 

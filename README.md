@@ -8,6 +8,7 @@ A standalone local GUI app for scanning chess positions for candidate brilliant 
 - renders the current position on an HTML chess board
 - loads a position from FEN or SAN move list
 - loads a full PGN game, converts it into the current search line, and snaps the board to the imported final position
+- builds a clickable move tree from the current SAN/PGN line so any move can reopen its exact board position
 - previews the current board state before you start a search
 - analyzes the position with local Stockfish on your PC
 - shows live Lichess database moves for the current board position when a local token is configured
@@ -88,6 +89,7 @@ The reproducible output is `Brilliant Move Finder.exe` directly in this folder. 
 - high-end local engine settings with editable thread/hash/depth controls
 - quick, balanced, and deep scan presets
 - live engine and database panel with stale-response protection so old analysis cannot overwrite the latest board
+- current-line move tree with circular nodes, White/Black move labels, PGN path preview, and click-to-load analysis positions
 - live scan log
 - position preview with FEN, side to move, and board snapshot
 - result list with detailed flags and compensation breakdown

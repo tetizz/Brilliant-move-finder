@@ -4,6 +4,7 @@ import atexit
 import io
 import json
 import os
+import re
 import sys
 import threading
 import uuid
@@ -610,6 +611,76 @@ def _build_analysis_payload(board: chess.Board, session: StockfishSession, setti
     }
 
 
+def _clean_san_tokens(moves_text: str) -> list[str]:
+    """Return PGN SAN tokens while skipping move numbers, comments, and results."""
+    text = re.sub(r"\{[^}]*\}", " ", str(moves_text or ""))
+    text = re.sub(r"\([^)]*\)", " ", text)
+    tokens: list[str] = []
+    for raw in text.replace("\n", " ").split():
+        token = raw.strip()
+        if not token:
+            continue
+        token = re.sub(r"^\d+\.(\.\.)?", "", token).strip()
+        if not token or token in {"1-0", "0-1", "1/2-1/2", "*"} or token.startswith("$"):
+            continue
+        tokens.append(token)
+    return tokens
+
+
+def _build_line_move_tree(moves_text: str, *, start_fen: str = "") -> dict[str, Any]:
+    """Build a clickable mainline tree with exact FENs after every SAN move."""
+    try:
+        board = chess.Board(start_fen) if start_fen and start_fen != "startpos" else chess.Board()
+    except ValueError:
+        board = chess.Board()
+
+    root: dict[str, Any] = {
+        "san": "Start",
+        "uci": "",
+        "count": 1,
+        "position_fen": board.fen(),
+        "children": [],
+    }
+    node = root
+    path_san: list[str] = []
+    path_uci: list[str] = []
+    error = ""
+
+    for ply_index, token in enumerate(_clean_san_tokens(moves_text)):
+        try:
+            move = board.parse_san(token)
+        except ValueError:
+            error = f"Stopped tree at {token}: illegal SAN for this position."
+            break
+        mover = "white" if board.turn == chess.WHITE else "black"
+        san = board.san(move)
+        uci = move.uci()
+        board.push(move)
+        path_san.append(san)
+        path_uci.append(uci)
+        child = {
+            "san": san,
+            "uci": uci,
+            "color": mover,
+            "role": "white move" if mover == "white" else "black move",
+            "ply": ply_index + 1,
+            "path_san": list(path_san),
+            "path_uci": list(path_uci),
+            "position_fen": board.fen(),
+            "opening_name": get_opening_name(board.fen()),
+            "children": [],
+        }
+        node["children"] = [child]
+        node = child
+
+    return {
+        "total_moves": len(path_san),
+        "root": root,
+        "error": error,
+        "final_fen": board.fen(),
+    }
+
+
 def _scan_worker(job_id: str, engine_path: str, board: chess.Board, settings: SearchSettings) -> None:
     job = job_store.get(job_id)
     assert job is not None
@@ -675,6 +746,14 @@ def preview() -> Any:
             "opening_name": get_opening_name(board.fen()),
         }
     )
+
+
+@web_app.post("/api/move-tree")
+def move_tree() -> Any:
+    payload = request.get_json(force=True)
+    moves = str(payload.get("moves", "") or "")
+    start_fen = str(payload.get("start_fen", "") or "")
+    return jsonify(_build_line_move_tree(moves, start_fen=start_fen))
 
 
 @web_app.post("/api/database-moves")
